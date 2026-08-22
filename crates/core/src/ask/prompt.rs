@@ -9,10 +9,11 @@ use super::CATALOG;
 
 /// How many times a stage may run before noal gives up on the request.
 ///
-/// One attempt: a refused stage ends the ask instead of trying again. The
-/// builders already accept previous attempts so a later policy can raise this
-/// without reshaping `plan_prompt` or `render_prompt`.
-pub const MAX_ATTEMPTS: usize = 1;
+/// Two attempts: a refused stage is retried once, with the failure appended
+/// to the prompt so the model can correct itself, before the ask gives up.
+/// The builders take previous attempts as an argument, so raising this
+/// constant is the whole of the retry policy; neither builder's body changes.
+pub const MAX_ATTEMPTS: usize = 2;
 
 /// A previous try at a stage: what the model produced and why it was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]

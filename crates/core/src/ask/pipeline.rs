@@ -9,7 +9,7 @@
 
 use super::outcome::{Debug, Outcome, Stage, StageAttempt, Timing, Verdict};
 use super::plan::{wrap_sql, Plan};
-use super::prompt::{plan_prompt, render_prompt, Attempt};
+use super::prompt::{plan_prompt, render_prompt, Attempt, MAX_ATTEMPTS};
 
 /// One thing the shell must run before the pipeline can continue.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,9 +72,13 @@ pub struct Pipeline {
     /// Set once a fill step has been issued, so a second arrival of the other
     /// half of the pair does not issue a second one.
     filled: bool,
-    /// Refused plans, for a future retry policy to read.
+    /// Refused plans, oldest first. Read by the retry policy to decide
+    /// whether another `Plan` step is owed, and passed to `plan_prompt` so
+    /// the model sees what it tried and why it was refused.
     plan_attempts: Vec<Attempt>,
-    /// Refused templates, for a future retry policy to read.
+    /// Refused templates, oldest first. Read by the retry policy to decide
+    /// whether another `Render` step is owed, and passed to `render_prompt`
+    /// the same way.
     render_attempts: Vec<Attempt>,
     /// What the debug panel will show.
     debug: Debug,
@@ -126,12 +130,34 @@ impl Pipeline {
 
     /// A plan arrived: query it and, unless a template already fits its
     /// shape, ask for one.
+    ///
+    /// A second `Plan` event, arriving after the first query was refused,
+    /// finds stale `rows` and a `filled` latch from the attempt that never
+    /// completed. Both are reset here so the query this plan starts can
+    /// still reach a fill, whether or not the held template survives.
     fn on_planned(&mut self, plan: Plan) -> Vec<Step> {
         let sql = wrap_sql(&plan.sql);
-        let prompt = render_prompt(&self.request, &plan.shape, &self.render_attempts);
+        let reuses_template = self.template.is_some()
+            && self
+                .plan
+                .as_ref()
+                .is_some_and(|previous| previous.same_shape(&plan));
+
         self.debug.plan = Some(plan.clone());
-        self.plan = Some(plan);
-        vec![Step::Query { sql }, Step::Render { prompt }]
+        self.rows = None;
+        self.filled = false;
+
+        if reuses_template {
+            self.plan = Some(plan);
+            vec![Step::Query { sql }]
+        } else {
+            // The held template, if any, was written for a shape this plan
+            // does not share; it would bind to the wrong fields.
+            self.template = None;
+            let prompt = render_prompt(&self.request, &plan.shape, &self.render_attempts);
+            self.plan = Some(plan);
+            vec![Step::Query { sql }, Step::Render { prompt }]
+        }
     }
 
     /// The query answered: keep the rows, and fill if a template is waiting.
@@ -140,7 +166,8 @@ impl Pipeline {
         self.try_fill()
     }
 
-    /// The query was refused. One attempt: the ask ends here.
+    /// The query was refused. Ask the model to plan again, with this attempt
+    /// added to the prompt, until `MAX_ATTEMPTS` is spent; then give up.
     fn on_queried_err(&mut self, message: String) -> Vec<Step> {
         let sql = self
             .plan
@@ -155,9 +182,15 @@ impl Pipeline {
             artifact: sql,
             error: message,
         });
-        vec![Step::Done(self.finish(Verdict::Failed {
-            stage: Stage::Query,
-        }))]
+
+        if self.plan_attempts.len() < MAX_ATTEMPTS {
+            let prompt = plan_prompt(&self.request, &self.plan_attempts);
+            vec![Step::Plan { prompt }]
+        } else {
+            vec![Step::Done(self.finish(Verdict::Failed {
+                stage: Stage::Query,
+            }))]
+        }
     }
 
     /// The template arrived: keep it, and fill if the rows are waiting.
@@ -167,7 +200,11 @@ impl Pipeline {
         self.try_fill()
     }
 
-    /// Tera refused the template. One attempt: the ask ends here.
+    /// Tera refused the template. Ask the model to render again, with this
+    /// attempt added to the prompt, until `MAX_ATTEMPTS` is spent; then give
+    /// up. The rows are already in hand, so the retry only re-renders; it
+    /// clears the `filled` latch so the fill this render leads to is not
+    /// mistaken for a repeat of the one that just failed.
     fn on_filled_err(&mut self, error: String) -> Vec<Step> {
         let template = self.template.clone().unwrap_or_default();
         self.debug.attempts.push(StageAttempt {
@@ -179,9 +216,20 @@ impl Pipeline {
             artifact: template,
             error,
         });
-        vec![Step::Done(
-            self.finish(Verdict::Failed { stage: Stage::Fill }),
-        )]
+
+        if self.render_attempts.len() < MAX_ATTEMPTS {
+            self.filled = false;
+            let shape = self
+                .plan
+                .as_ref()
+                .map_or(&[][..], |plan| plan.shape.as_slice());
+            let prompt = render_prompt(&self.request, shape, &self.render_attempts);
+            vec![Step::Render { prompt }]
+        } else {
+            vec![Step::Done(
+                self.finish(Verdict::Failed { stage: Stage::Fill }),
+            )]
+        }
     }
 
     /// Issue the fill step the moment both halves of a query/render pair are
@@ -229,6 +277,28 @@ mod tests {
                 description: String::new(),
                 fields: Vec::new(),
             }],
+        }
+    }
+
+    /// A plan whose shape has one extra column, so a template written for
+    /// [`plan`] does not fit it.
+    fn plan_with_a_different_shape() -> Plan {
+        Plan {
+            sql: "select id, title from ticket".into(),
+            shape: vec![
+                Column {
+                    name: "id".into(),
+                    kind: ColumnKind::Integer,
+                    description: String::new(),
+                    fields: Vec::new(),
+                },
+                Column {
+                    name: "title".into(),
+                    kind: ColumnKind::Text,
+                    description: String::new(),
+                    fields: Vec::new(),
+                },
+            ],
         }
     }
 
@@ -329,7 +399,10 @@ mod tests {
             millis: 20,
         });
 
-        let done = pipeline.apply(Event::Queried(Err("boom".into())));
+        // Spend both attempts: with a retry policy in place, one refusal is
+        // no longer enough to reach `Done`.
+        let _ = pipeline.apply(Event::Queried(Err("first refusal".into())));
+        let done = pipeline.apply(Event::Queried(Err("second refusal".into())));
         let outcome = done_outcome(&done);
         assert_eq!(
             outcome.debug.timings,
@@ -347,38 +420,178 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_query_ends_the_ask_without_waiting_for_the_render() {
+    fn a_refused_query_asks_the_model_to_plan_again() {
         let (mut pipeline, _) = Pipeline::start("open tasks".into());
         let _ = pipeline.apply(Event::Planned(plan()));
 
-        let done = pipeline.apply(Event::Queried(Err("column \"nope\" does not exist".into())));
-        let outcome = done_outcome(&done);
-        assert_eq!(
-            outcome.verdict,
-            Verdict::Failed {
-                stage: Stage::Query
+        let steps = pipeline.apply(Event::Queried(Err("column \"nope\" does not exist".into())));
+        match steps.as_slice() {
+            [Step::Plan { prompt }] => {
+                assert!(prompt.contains("# Previous attempts"));
+                assert!(prompt.contains("column \"nope\" does not exist"));
             }
-        );
-        assert_eq!(outcome.debug.attempts.len(), 1);
-        assert_eq!(outcome.debug.attempts[0].stage, Stage::Query);
+            other => panic!("expected exactly one Plan step, got {other:?}"),
+        }
 
-        // A late-arriving render must not turn into a second Fill or Done.
+        // A late-arriving render for the refused pair must not turn into a
+        // Fill: the rows it would pair with never arrived.
         let after_render = pipeline.apply(Event::Rendered("<p></p>".into()));
         assert!(after_render.is_empty());
     }
 
     #[test]
-    fn a_refused_fill_ends_the_ask() {
+    fn a_second_refused_query_ends_the_ask_instead_of_planning_a_third_time() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Err("first refusal".into())));
+        // The model tries again; a fresh plan with no held template.
+        let _ = pipeline.apply(Event::Planned(plan()));
+
+        let done = pipeline.apply(Event::Queried(Err("second refusal".into())));
+        match done.as_slice() {
+            [Step::Done(outcome)] => {
+                assert_eq!(
+                    outcome.verdict,
+                    Verdict::Failed {
+                        stage: Stage::Query
+                    }
+                );
+                assert_eq!(outcome.debug.attempts.len(), 2);
+                assert!(outcome
+                    .debug
+                    .attempts
+                    .iter()
+                    .all(|attempt| attempt.stage == Stage::Query));
+            }
+            other => panic!("expected exactly one Done step, not a third Plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_fill_asks_the_model_to_render_again() {
         let (mut pipeline, _) = Pipeline::start("open tasks".into());
         let _ = pipeline.apply(Event::Planned(plan()));
         let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
         let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
 
-        let done = pipeline.apply(Event::Filled(Err("variable `missing` not found".into())));
+        let steps = pipeline.apply(Event::Filled(Err("variable `missing` not found".into())));
+        match steps.as_slice() {
+            [Step::Render { prompt }] => {
+                assert!(prompt.contains("# Previous attempts"));
+                assert!(prompt.contains("variable `missing` not found"));
+            }
+            other => panic!("expected exactly one Render step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_second_refused_fill_ends_the_ask() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
+        let _ = pipeline.apply(Event::Filled(Err("first refusal".into())));
+        let _ = pipeline.apply(Event::Rendered("{{ rows.0.also_missing }}".into()));
+
+        let done = pipeline.apply(Event::Filled(Err("second refusal".into())));
         let outcome = done_outcome(&done);
         assert_eq!(outcome.verdict, Verdict::Failed { stage: Stage::Fill });
-        assert_eq!(outcome.debug.attempts.len(), 1);
-        assert_eq!(outcome.debug.attempts[0].stage, Stage::Fill);
+        assert_eq!(outcome.debug.attempts.len(), 2);
+        assert!(outcome
+            .debug
+            .attempts
+            .iter()
+            .all(|attempt| attempt.stage == Stage::Fill));
+    }
+
+    #[test]
+    fn debug_attempts_holds_every_refusal_in_order() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
+        let _ = pipeline.apply(Event::Filled(Err("missing once".into())));
+
+        let done = pipeline.apply(Event::Filled(Err("missing twice".into())));
+        let outcome = done_outcome(&done);
+        let stages: Vec<_> = outcome
+            .debug
+            .attempts
+            .iter()
+            .map(|attempt| (attempt.stage, attempt.error.as_str()))
+            .collect();
+        assert_eq!(
+            stages,
+            vec![
+                (Stage::Query, "bad sql"),
+                (Stage::Fill, "missing once"),
+                (Stage::Fill, "missing twice"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_replan_with_an_equal_shape_keeps_the_template_and_only_queries() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
+
+        let steps = pipeline.apply(Event::Planned(plan()));
+        assert!(
+            matches!(steps.as_slice(), [Step::Query { .. }]),
+            "expected only a Query step, got {steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_replan_with_a_different_shape_drops_the_template_and_renders_again() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
+
+        let steps = pipeline.apply(Event::Planned(plan_with_a_different_shape()));
+        assert!(
+            matches!(steps.as_slice(), [Step::Query { .. }, Step::Render { .. }]),
+            "expected a Query and a Render step, got {steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_retry_that_keeps_the_template_still_reaches_answered() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
+        // The re-plan has the same shape, so only a Query is issued and the
+        // held template is kept for the fill.
+        let requeue = pipeline.apply(Event::Planned(plan()));
+        assert!(matches!(requeue.as_slice(), [Step::Query { .. }]));
+
+        let rows = json!([{ "id": 1 }]);
+        let after_query = pipeline.apply(Event::Queried(Ok(rows.clone())));
+        match after_query.as_slice() {
+            [Step::Fill {
+                template,
+                rows: filled_rows,
+            }] => {
+                assert_eq!(template, "<p>{{ rows | length }}</p>");
+                assert_eq!(filled_rows, &rows);
+            }
+            other => panic!("expected exactly one Fill step, got {other:?}"),
+        }
+
+        let done = pipeline.apply(Event::Filled(Ok("<p>1</p>".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Answered {
+                html: "<p>1</p>".into()
+            }
+        );
     }
 
     #[test]
