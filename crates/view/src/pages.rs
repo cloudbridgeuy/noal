@@ -20,8 +20,8 @@ pub fn home(viewer: &Viewer) -> Markup {
                 Viewer::Anonymous => {
                     p { "You are not signed in." }
                 }
-                Viewer::SignedIn { email } => {
-                    p { "Signed in as " (email) "." }
+                Viewer::SignedIn { .. } => {
+                    (crate::ask::form())
                 }
             }
         },
@@ -57,12 +57,12 @@ mod tests {
     }
 
     #[test]
-    fn home_greets_a_signed_in_viewer_by_email() {
+    fn home_offers_a_signed_in_viewer_the_ask_form() {
         let viewer = Viewer::SignedIn {
             email: "someone@example.com".to_owned(),
         };
         let rendered = home(&viewer).into_string();
-        assert!(rendered.contains("Signed in as someone@example.com."));
+        assert!(rendered.contains("hx-post=\"/ask\""));
     }
 
     #[test]

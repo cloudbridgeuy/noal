@@ -13,6 +13,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![deny(missing_docs)]
 
+pub mod ask;
 pub mod auth;
 pub mod clock;
 pub mod cookie;
