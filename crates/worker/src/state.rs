@@ -92,3 +92,14 @@ impl AppState {
 pub fn now() -> Timestamp {
     Timestamp::from_unix_seconds(chrono::Utc::now().timestamp())
 }
+
+/// The current time in milliseconds since the Unix epoch.
+///
+/// `now()` gives whole seconds, too coarse for timing a pipeline stage that
+/// can finish in tens of milliseconds. This is the only other place in noal
+/// that reads a clock; the debug panel's `Timing` values are built from it
+/// and passed into `noal_core` as plain numbers.
+#[must_use]
+pub fn now_millis() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
+}

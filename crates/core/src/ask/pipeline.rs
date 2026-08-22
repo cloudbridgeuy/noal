@@ -7,7 +7,7 @@
 //! means, when to give up — lives here as ordinary code with ordinary tests,
 //! and the shell's loop never has to know why it is doing what it does.
 
-use super::outcome::{Debug, Outcome, Stage, StageAttempt, Verdict};
+use super::outcome::{Debug, Outcome, Stage, StageAttempt, Timing, Verdict};
 use super::plan::{wrap_sql, Plan};
 use super::prompt::{plan_prompt, render_prompt, Attempt};
 
@@ -96,6 +96,16 @@ impl Pipeline {
             debug: Debug::default(),
         };
         (pipeline, vec![Step::Plan { prompt }])
+    }
+
+    /// Record how long a stage took, for the debug panel.
+    ///
+    /// The shell measures every stage it runs, including a query and a
+    /// render that ran concurrently, and calls this once per stage. It is
+    /// pure bookkeeping: nothing here reads a clock, so the timing itself is
+    /// always a value the shell already computed.
+    pub fn record(&mut self, timing: Timing) {
+        self.debug.timings.push(timing);
     }
 
     /// Advance the pipeline with one result from the shell.
@@ -206,7 +216,7 @@ impl Pipeline {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{Event, Pipeline, Step};
-    use crate::ask::outcome::{Stage, Verdict};
+    use crate::ask::outcome::{Stage, Timing, Verdict};
     use crate::ask::plan::{Column, ColumnKind, Plan};
     use serde_json::json;
 
@@ -304,6 +314,35 @@ mod tests {
             Verdict::Answered {
                 html: "<p>1</p>".into()
             }
+        );
+    }
+
+    #[test]
+    fn record_appends_timings_in_order() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        pipeline.record(Timing {
+            stage: Stage::Plan,
+            millis: 10,
+        });
+        pipeline.record(Timing {
+            stage: Stage::Query,
+            millis: 20,
+        });
+
+        let done = pipeline.apply(Event::Queried(Err("boom".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.debug.timings,
+            vec![
+                Timing {
+                    stage: Stage::Plan,
+                    millis: 10
+                },
+                Timing {
+                    stage: Stage::Query,
+                    millis: 20
+                },
+            ]
         );
     }
 
