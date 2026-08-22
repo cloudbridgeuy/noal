@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "noal-spike-workers-postgres",
+  "main": "build/index.js",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "build": {
+    "command": "worker-build --release"
+  },
+  // `id` is only needed to deploy. For `wrangler dev`, set
+  // WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB to the Neon URL instead,
+  // which keeps the secret out of this file.
+  "hyperdrive": [
+    {
+      "binding": "DB",
+      "id": "0000000000000000000000000000000000"
+    }
+  ]
+}

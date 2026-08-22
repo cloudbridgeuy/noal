@@ -1,0 +1,203 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# noal builds for two targets and they cannot be checked together. `noal_core`,
+# `noal_view`, and `xtask` are native; `noal_worker` compiles only for
+# `wasm32-unknown-unknown`. Every cargo invocation below therefore either
+# excludes the Worker or names it alone.
+
+jobs:
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry and index
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Cache target directory
+        uses: actions/cache@v5
+        with:
+          path: target/
+          key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-target-
+      - name: Run tests
+        run: cargo test --workspace --exclude noal_worker --all-targets
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo registry and index
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-clippy-cargo-
+      - name: Cache target directory
+        uses: actions/cache@v5
+        with:
+          path: target/
+          key: ${{ runner.os }}-clippy-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-clippy-target-
+      - name: Run Clippy on the native crates
+        run: cargo clippy --workspace --exclude noal_worker --all-targets -- -D warnings
+      - name: Run Clippy on the Worker
+        run: cargo clippy -p noal_worker --target wasm32-unknown-unknown -- -D warnings
+
+  build:
+    name: Build Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo registry and index
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-build-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-build-cargo-
+      - name: Cache target directory
+        uses: actions/cache@v5
+        with:
+          path: target/
+          key: ${{ runner.os }}-build-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-build-target-
+      - name: Check the native crates
+        run: cargo check --workspace --exclude noal_worker --all-targets
+      - name: Check the Worker
+        run: cargo check -p noal_worker --target wasm32-unknown-unknown
+
+  wasm-size:
+    name: Worker Bundle Size
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install worker-build
+        run: cargo install worker-build --locked
+      - name: Build the Worker
+        run: cd crates/worker && worker-build --release
+      # Cloudflare rejects a Worker over 3 MB gzipped on the free plan. Report
+      # the number on every run so a dependency that doubles it is visible in
+      # the pull request, not at deploy time.
+      - name: Report the compressed size
+        run: |
+          raw=$(stat -c%s crates/worker/build/index_bg.wasm)
+          gzipped=$(gzip -c crates/worker/build/index_bg.wasm | wc -c)
+          echo "raw: $raw bytes"
+          echo "gzipped: $gzipped bytes"
+          echo "### Worker bundle: $((gzipped / 1024)) KB gzipped" >> "$GITHUB_STEP_SUMMARY"
+
+  docs:
+    name: Rustdoc Build
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo registry and index
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-docs-cargo-
+      - name: Cache target directory
+        uses: actions/cache@v5
+        with:
+          path: target/
+          key: ${{ runner.os }}-docs-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-docs-target-
+            ${{ runner.os }}-target-
+      - name: Build Rustdoc for the native crates
+        run: cargo doc --workspace --exclude noal_worker --no-deps
+      - name: Build Rustdoc for the Worker
+        run: cargo doc -p noal_worker --target wasm32-unknown-unknown --no-deps
+
+  typos:
+    name: Check Typos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Check for typos
+        uses: crate-ci/typos@master
+
+  deny:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Run Cargo Deny
+        uses: EmbarkStudios/cargo-deny-action@v2

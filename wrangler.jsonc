@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "noal",
+  "main": "crates/worker/build/index.js",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // worker-build reads the manifest in its working directory and cannot be
+  // pointed at a workspace member, so it runs from the crate. It writes the
+  // Wasm and the loader glue into crates/worker/build/.
+  "build": {
+    "command": "cd crates/worker && worker-build --release"
+  },
+
+  // Hyperdrive holds the connection pool and terminates TLS to Neon.
+  //
+  // `id` is only needed to deploy. For `wrangler dev`, leave the placeholder
+  // and set WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB to the Neon URL,
+  // which keeps the credential out of this file.
+  "hyperdrive": [
+    {
+      "binding": "DB",
+      "id": "0000000000000000000000000000000000"
+    }
+  ],
+
+  // Public settings. Secrets are not here; see .dev.vars.example.
+  "vars": {
+    "WORKOS_CLIENT_ID": "",
+    "REDIRECT_URI": "http://localhost:8787/auth/callback"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

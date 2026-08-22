@@ -1,0 +1,34 @@
+default_job = "check"
+
+# The workspace is split by target. `core`, `view`, and `xtask` build for the
+# host. `worker` only builds for wasm32-unknown-unknown.
+
+[jobs.check]
+command = ["cargo", "check", "--workspace", "--exclude", "noal_worker", "--color", "always"]
+need_stdout = false
+
+[jobs.check-wasm]
+command = ["cargo", "check", "-p", "noal_worker", "--target", "wasm32-unknown-unknown", "--color", "always"]
+need_stdout = false
+
+[jobs.clippy]
+command = ["cargo", "clippy", "--workspace", "--exclude", "noal_worker", "--all-targets", "--color", "always"]
+need_stdout = false
+
+[jobs.test]
+command = ["cargo", "test", "--workspace", "--exclude", "noal_worker", "--color", "always", "--", "--color", "always"]
+need_stdout = true
+default_watch = false
+watch = ["crates", "xtask"]
+
+[jobs.doc]
+command = ["cargo", "doc", "--workspace", "--exclude", "noal_worker", "--color", "always", "--no-deps"]
+need_stdout = false
+
+[keybindings]
+j = "scroll-lines(1)"
+k = "scroll-lines(-1)"
+ctrl-d = "scroll-pages(1)"
+ctrl-u = "scroll-pages(-1)"
+g = "scroll-to-top"
+shift-g = "scroll-to-bottom"

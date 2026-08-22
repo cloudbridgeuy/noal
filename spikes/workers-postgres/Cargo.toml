@@ -1,0 +1,47 @@
+[package]
+name = "noal-spike-workers-postgres"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The Workers runtime bindings. `http` + `axum` let axum serve a Worker fetch
+# event; `tokio-postgres` pulls in `worker::postgres_tls::PassthroughTls` and
+# the `TlsConnect<Socket>` impl that lets tokio-postgres speak to a socket the
+# Workers runtime already wrapped in TLS.
+worker = { version = "0.8", features = ["http", "axum", "tokio-postgres"] }
+worker-macros = { version = "0.8", features = ["http"] }
+
+# Routing. `default-features = false` keeps tokio, hyper, and the multi-thread
+# server out of the Wasm build.
+axum = { version = "0.8", default-features = false }
+tower-service = "0.3"
+
+# The Postgres client. The `js` feature swaps its entropy and time sources for
+# the ones the JS host provides.
+tokio-postgres = { version = "0.7", default-features = false, features = ["js"] }
+
+# HTML for htmx fragments. Compile-time templates, so no runtime file I/O.
+maud = "0.27"
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+
+# axum demands Send handler futures. The Workers JS bindings resolve JsFuture,
+# which is Rc-based and !Send. Sound to wrap on wasm32-unknown-unknown, which
+# has a single thread.
+send_wrapper = { version = "0.6", features = ["futures"] }
+
+[profile.release]
+# Wasm on Workers is size-bound, not speed-bound.
+#
+# `panic = "abort"` and `strip = true` are deliberately absent: wasm-bindgen
+# generates catch wrappers that need an externref table, and both settings
+# break that with "externref table required for catch wrappers".
+opt-level = "z"
+lto = true
+codegen-units = 1

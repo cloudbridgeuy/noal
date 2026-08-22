@@ -1,0 +1,8 @@
+# Maximum function arguments before `too_many_arguments` fires.
+too-many-arguments-threshold = 5
+
+# More than one Boolean parameter needs an enum or options struct.
+max-fn-params-bools = 1
+
+# Keep pure functions small and direct.
+cognitive-complexity-threshold = 15

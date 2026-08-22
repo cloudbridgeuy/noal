@@ -1,0 +1,109 @@
+[workspace]
+members = ["crates/core", "crates/view", "crates/worker", "xtask"]
+exclude = ["spikes/workers-postgres"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+authors = ["Guzmán Monné"]
+rust-version = "1.95.0"
+publish = false
+
+[workspace.lints.clippy]
+# Note: unwrap_used and expect_used are denied in lib.rs/main.rs via
+# #![deny(...)] rather than here, so test code can still use .unwrap().
+
+# Make Impossible States Impossible — force explicit variant names, no globs
+enum_glob_use = "deny"
+wildcard_imports = "deny"
+
+# Parse Don't Validate — cleaner early returns at boundaries
+manual_let_else = "warn"
+
+# Algebraic Data Types — catch enums with huge size disparity between variants
+large_enum_variant = "warn"
+
+# Clarity — make clones and copies visible and intentional
+implicit_clone = "warn"
+cloned_instead_of_copied = "warn"
+redundant_closure_for_method_calls = "warn"
+needless_pass_by_value = "warn"
+
+[profile.dev]
+# Disabling debug info speeds up builds.
+debug = 0
+
+[profile.release]
+# Wasm on Workers is size-bound, not speed-bound.
+#
+# `panic = "abort"` and `strip = true` are deliberately absent. wasm-bindgen
+# emits catch wrappers that need an externref table, and either setting breaks
+# the build with "externref table required for catch wrappers".
+# See spikes/workers-postgres/README.md.
+opt-level = "z"
+lto = true
+codegen-units = 1
+incremental = false
+debug = 0
+
+[workspace.dependencies]
+
+# Internal crates
+noal_core = { version = "0.0.0", path = "crates/core" }
+noal_view = { version = "0.0.0", path = "crates/view" }
+
+# The Workers runtime. `http` + `axum` let axum serve a fetch event.
+# `tokio-postgres` supplies PassthroughTls and the TlsConnect<Socket> impl.
+worker = { version = "0.8", features = ["http", "axum", "tokio-postgres"] }
+worker-macros = { version = "0.8", features = ["http"] }
+
+# Routing. default-features = false keeps tokio and hyper out of the Wasm build.
+axum = { version = "0.8", default-features = false }
+tower-service = "0.3"
+
+# Postgres. The `js` feature swaps entropy and time for the JS host's.
+tokio-postgres = { version = "0.7", default-features = false, features = ["js"] }
+
+# HTML. Compile-time templates, so no runtime file I/O and no Wasm penalty.
+maud = "0.27"
+
+# Session cookie sealing. Pure Rust, so the hot path stays Send.
+chacha20poly1305 = "0.10"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+# chacha20poly1305 reaches rand_core 0.6, which reaches getrandom 0.2. noal
+# never asks that copy for entropy, but it refuses to compile for
+# wasm32-unknown-unknown unless the `js` feature is on somewhere in the graph.
+# Declaring it here turns the feature on. On a native target the feature is
+# inert, because getrandom gates its JS bindings on the wasm32 target.
+getrandom_legacy = { package = "getrandom", version = "0.2", features = ["js"] }
+base64 = "0.22"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time. `wasmbind` makes Utc::now() work through the JS Date object.
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "wasmbind"] }
+
+# Structured errors in the libraries
+thiserror = "2"
+
+# Wasm plumbing
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+
+# axum needs Send handler futures; the Workers JS bindings are Rc-based.
+# Sound on wasm32-unknown-unknown, which has a single thread.
+send_wrapper = { version = "0.6", features = ["futures"] }
+
+# Native-only, for xtask
+clap = { version = "4.5", features = ["derive", "string", "env"] }
+color-eyre = "0.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres-native = { package = "tokio-postgres", version = "0.7" }
+postgres-native-tls = "0.5"
+native-tls = "0.2"
