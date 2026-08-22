@@ -56,8 +56,13 @@ noal_view = { version = "0.0.0", path = "crates/view" }
 
 # The Workers runtime. `http` + `axum` let axum serve a fetch event.
 # `tokio-postgres` supplies PassthroughTls and the TlsConnect<Socket> impl.
-worker = { version = "0.8", features = ["http", "axum", "tokio-postgres"] }
-worker-macros = { version = "0.8", features = ["http"] }
+#
+# Pinned to =0.8.3. From 0.8.4, worker requires wasm-streams ^0.6, while
+# reqwest (pulled in by rig-core) requires ^0.5; cargo links both copies and
+# their wasm_bindgen glue symbols collide at the wasm-bindgen linker step.
+# Lift the pin once a published reqwest requires wasm-streams ^0.6.
+worker = { version = "=0.8.3", features = ["http", "axum", "tokio-postgres"] }
+worker-macros = { version = "=0.8.3", features = ["http"] }
 
 # Routing. default-features = false keeps tokio and hyper out of the Wasm build.
 axum = { version = "0.8", default-features = false }

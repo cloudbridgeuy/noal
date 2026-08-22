@@ -1659,7 +1659,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.5.0",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -2494,19 +2494,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-streams"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7d3be8814f5ba5f074491a469eed3d73c273ffad955f25ed1635efac4b0d269"
-dependencies = [
- "futures-util",
- "js-sys",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "web-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2605,9 +2592,9 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "worker"
-version = "0.8.5"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f8adbf6c9ae45b665dee995c5e3a342c2bd7d58a2e8ca5c75b50ce8b1b8bfd9"
+checksum = "2d3c60a70414db58e1890f3675d02692adace736657cb66994f220ae3780c90d"
 dependencies = [
  "async-trait",
  "axum",
@@ -2630,7 +2617,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams 0.6.0",
+ "wasm-streams",
  "web-sys",
  "worker-macros",
  "worker-sys",
@@ -2638,9 +2625,9 @@ dependencies = [
 
 [[package]]
 name = "worker-macros"
-version = "0.8.5"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d908735d273dd7f9c325a842623f4e5a745e0686187ce465b34dc162ad348df"
+checksum = "60bcb459a67977fcb79698a3123ae58a928b1b24cc3035eaec033dbdfc139438"
 dependencies = [
  "async-trait",
  "proc-macro2",
@@ -2648,6 +2635,7 @@ dependencies = [
  "strum",
  "syn 2.0.119",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-macro-support",
  "worker-sys",
 ]
