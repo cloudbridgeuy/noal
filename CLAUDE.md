@@ -64,6 +64,13 @@ These were found the hard way. The evidence is in
 - **`jsonwebtoken` does not build for `wasm32-unknown-unknown`.** This is why
   noal never verifies a WorkOS token signature on the hot path; see below.
 
+- **`worker` is pinned to `=0.8.3`.** From 0.8.4, `worker` requires
+  `wasm-streams ^0.6`, while `reqwest` (pulled in by `rig-core` for the model
+  client) requires `^0.5`. Cargo cannot unify the two, links both copies, and
+  their `wasm_bindgen` glue symbols collide at the linker with duplicate
+  `intounderlyingbytesource_*`/`intounderlyingsink_*`/`intounderlyingsource_*`
+  errors. Lift the pin once a published `reqwest` requires `wasm-streams ^0.6`.
+
 - **Prefer `simple_query` over `query` when Hyperdrive caching is off.**
   A prepared statement needs the cache. `/health/db` uses `simple_query` so it
   works in every configuration.

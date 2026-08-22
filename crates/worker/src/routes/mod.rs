@@ -21,6 +21,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/health", get(health::alive))
         .route("/health/db", get(health::database))
+        .route("/health/llm", get(health::model))
         .fallback(home::not_found)
         .with_state(state)
 }
