@@ -6,10 +6,12 @@
 //! concurrently with `try_join` — render is the slow one, and there is no
 //! reason to wait for it before asking Postgres.
 
+use std::future::Future;
+
 use axum::extract::State;
 use axum::response::Html;
 use axum::Form;
-use noal_core::ask::outcome::Outcome;
+use noal_core::ask::outcome::{Outcome, Stage, Timing};
 use noal_core::ask::pipeline::{Event, Pipeline, Step};
 use noal_core::ask::plan::Plan;
 use noal_core::ask::prompt::{strip_fences, PLAN_PREAMBLE, RENDER_PREAMBLE};
@@ -19,7 +21,7 @@ use tokio_postgres::SimpleQueryMessage;
 use crate::extract::SignedIn;
 use crate::failure::Failure;
 use crate::llm;
-use crate::state::AppState;
+use crate::state::{now_millis, AppState};
 
 /// The form field the ask form posts.
 #[derive(Debug, Deserialize)]
@@ -63,23 +65,38 @@ async fn run(state: &AppState, request: String) -> Result<Outcome, Failure> {
         for step in steps {
             match step {
                 Step::Plan { prompt } => {
-                    let plan =
-                        llm::structured::<Plan>(state.config(), PLAN_PREAMBLE, prompt).await?;
+                    let (plan, timing) = timed(
+                        Stage::Plan,
+                        llm::structured::<Plan>(state.config(), PLAN_PREAMBLE, prompt),
+                    )
+                    .await?;
+                    pipeline.record(timing);
                     events.push(Event::Planned(plan));
                 }
                 Step::Query { sql } => pending_query = Some(sql),
                 Step::Render { prompt } => pending_render = Some(prompt),
                 Step::Fill { template, rows } => {
-                    events.push(Event::Filled(
-                        noal_view::render::fill(&template, &rows)
-                            .map_err(|error| error.to_string()),
-                    ));
+                    let start = now_millis();
+                    let result = noal_view::render::fill(&template, &rows)
+                        .map_err(|error| error.to_string());
+                    pipeline.record(Timing {
+                        stage: Stage::Fill,
+                        millis: now_millis().saturating_sub(start),
+                    });
+                    events.push(Event::Filled(result));
                 }
                 Step::Done(outcome) => return Ok(outcome),
             }
         }
 
-        run_pending(state, pending_query, pending_render, &mut events).await?;
+        run_pending(
+            state,
+            pending_query,
+            pending_render,
+            &mut events,
+            &mut pipeline,
+        )
+        .await?;
 
         steps = events
             .into_iter()
@@ -90,29 +107,58 @@ async fn run(state: &AppState, request: String) -> Result<Outcome, Failure> {
 
 /// Run whichever of a pending query and a pending render this round holds,
 /// joining the two when both are present.
+///
+/// A query and a render that run together overlap in wall clock time, so
+/// their two [`Timing`]s do not sum to how long the pair actually took; each
+/// is measured from its own start to its own finish, which is what the debug
+/// panel is documented to show.
 async fn run_pending(
     state: &AppState,
     query: Option<String>,
     render: Option<String>,
     events: &mut Vec<Event>,
+    pipeline: &mut Pipeline,
 ) -> Result<(), Failure> {
     match (query, render) {
         (Some(sql), Some(prompt)) => {
-            let (queried, rendered) =
-                futures_util::future::try_join(execute(state, &sql), render_call(state, prompt))
-                    .await?;
+            let ((queried, query_timing), (rendered, render_timing)) =
+                futures_util::future::try_join(
+                    timed(Stage::Query, execute(state, &sql)),
+                    timed(Stage::Render, render_call(state, prompt)),
+                )
+                .await?;
+            pipeline.record(query_timing);
+            pipeline.record(render_timing);
             events.push(Event::Queried(queried));
             events.push(Event::Rendered(rendered));
         }
         (Some(sql), None) => {
-            events.push(Event::Queried(execute(state, &sql).await?));
+            let (queried, timing) = timed(Stage::Query, execute(state, &sql)).await?;
+            pipeline.record(timing);
+            events.push(Event::Queried(queried));
         }
         (None, Some(prompt)) => {
-            events.push(Event::Rendered(render_call(state, prompt).await?));
+            let (rendered, timing) = timed(Stage::Render, render_call(state, prompt)).await?;
+            pipeline.record(timing);
+            events.push(Event::Rendered(rendered));
         }
         (None, None) => {}
     }
     Ok(())
+}
+
+/// Measure how long a fallible step took, in milliseconds.
+///
+/// The clock is read only here, in the shell; `noal_core::ask::pipeline`
+/// only ever receives the resulting [`Timing`] as a plain value.
+async fn timed<F, T, E>(stage: Stage, future: F) -> Result<(T, Timing), E>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    let start = now_millis();
+    let value = future.await?;
+    let millis = now_millis().saturating_sub(start);
+    Ok((value, Timing { stage, millis }))
 }
 
 /// Ask the model for a template and drop any surrounding code fence.
