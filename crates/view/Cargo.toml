@@ -11,6 +11,9 @@ description = "Server-rendered HTML for noal. Pure functions from data to markup
 [dependencies]
 maud.workspace = true
 noal_core.workspace = true
+serde_json.workspace = true
+tera.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
