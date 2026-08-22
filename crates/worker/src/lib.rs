@@ -22,6 +22,7 @@ pub mod config;
 pub mod entropy;
 pub mod extract;
 pub mod failure;
+pub mod llm;
 pub mod routes;
 pub mod state;
 
