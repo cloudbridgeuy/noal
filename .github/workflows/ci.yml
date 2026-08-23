@@ -38,7 +38,7 @@ jobs:
       - name: Install the pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Cache cargo registry and index
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -48,7 +48,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Cache target directory
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: target/
           key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
@@ -68,7 +68,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Cache cargo registry and index
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -78,7 +78,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-clippy-cargo-
       - name: Cache target directory
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: target/
           key: ${{ runner.os }}-clippy-target-${{ hashFiles('**/Cargo.lock') }}
@@ -103,7 +103,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Cache cargo registry and index
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -113,7 +113,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-build-cargo-
       - name: Cache target directory
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: target/
           key: ${{ runner.os }}-build-target-${{ hashFiles('**/Cargo.lock') }}
@@ -162,7 +162,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Cache cargo registry and index
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -172,7 +172,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-docs-cargo-
       - name: Cache target directory
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: target/
           key: ${{ runner.os }}-docs-target-${{ hashFiles('**/Cargo.lock') }}
