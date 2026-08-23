@@ -63,9 +63,20 @@ pub enum ColumnKind {
 impl Plan {
     /// True when both plans return the same columns, so a template written
     /// for one fits the other.
+    ///
+    /// Compares name, kind, and nested fields only. `description` is prose
+    /// for the model that wrote the plan; a reworded description binds to
+    /// the same template field, so it is not part of what "the same shape"
+    /// means. Ignoring it lets a retry keep a good template more often, at
+    /// no risk: a real shape change still differs by name, kind, or fields.
     #[must_use]
     pub fn same_shape(&self, other: &Self) -> bool {
-        self.shape == other.shape
+        self.shape.len() == other.shape.len()
+            && self
+                .shape
+                .iter()
+                .zip(&other.shape)
+                .all(|(a, b)| a.name == b.name && a.kind == b.kind && a.fields == b.fields)
     }
 }
 
@@ -128,6 +139,23 @@ mod tests {
             shape: vec![text("title")],
         };
         assert!(!a.same_shape(&b));
+    }
+
+    #[test]
+    fn a_reworded_description_does_not_change_the_shape() {
+        let mut a = text("id");
+        a.description = "the ticket's id".into();
+        let mut b = text("id");
+        b.description = "unique identifier of the ticket".into();
+        let plan_a = Plan {
+            sql: "select 1".into(),
+            shape: vec![a],
+        };
+        let plan_b = Plan {
+            sql: "select 2".into(),
+            shape: vec![b],
+        };
+        assert!(plan_a.same_shape(&plan_b));
     }
 
     #[test]
