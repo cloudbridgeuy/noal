@@ -9,6 +9,7 @@ with [WorkOS AuthKit](https://workos.com/docs/authkit).
 
 There is no domain yet. `crates/core` holds the session and authentication
 rules and nothing else; that is the seam where the application goes.
+`docs/design.md` describes what will go there.
 
 ## Shape
 

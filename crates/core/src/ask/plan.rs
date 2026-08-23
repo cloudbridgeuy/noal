@@ -94,6 +94,32 @@ pub fn wrap_sql(sql: &str) -> String {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+mod schema_order {
+    use super::Plan;
+
+    /// A provider that constrains decoding to a JSON schema emits the
+    /// properties in the order the schema lists them. `sql` must come first,
+    /// because a model cannot describe the columns of a query it has not
+    /// written yet — asked for `shape` first, it answers `[]` and the plan is
+    /// useless.
+    ///
+    /// The order is the struct's field order only while `serde_json` carries
+    /// its `preserve_order` feature; without it a schema's `properties` is a
+    /// `BTreeMap` and sorts alphabetically, which puts `shape` first.
+    #[test]
+    fn the_schema_asks_for_sql_before_shape() {
+        let schema = serde_json::to_string(&schemars::schema_for!(Plan)).unwrap();
+        let sql = schema.find(r#""sql""#).unwrap();
+        let shape = schema.find(r#""shape""#).unwrap();
+        assert!(
+            sql < shape,
+            "sql must precede shape in the schema: {schema}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{wrap_sql, Column, ColumnKind, NestedField, Plan};
 
