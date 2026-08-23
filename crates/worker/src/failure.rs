@@ -30,6 +30,10 @@ pub enum Failure {
     #[error("upstream: {0}")]
     Upstream(String),
 
+    /// The model did not answer, or answered with something unusable.
+    #[error("model: {0}")]
+    Model(String),
+
     /// The sign-in exchange failed.
     #[error("sign-in: {0}")]
     Auth(#[from] AuthError),
@@ -54,12 +58,17 @@ impl Failure {
         Self::Upstream(error.to_string())
     }
 
+    /// Wrap any error from the model client.
+    pub fn model(error: impl std::fmt::Display) -> Self {
+        Self::Model(error.to_string())
+    }
+
     /// The status code this failure deserves.
     #[must_use]
     pub const fn status(&self) -> StatusCode {
         match self {
             Self::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::Database(_) | Self::Upstream(_) => StatusCode::BAD_GATEWAY,
+            Self::Database(_) | Self::Upstream(_) | Self::Model(_) => StatusCode::BAD_GATEWAY,
             Self::Auth(_) => StatusCode::BAD_REQUEST,
             Self::Session(_) | Self::NotSignedIn => StatusCode::UNAUTHORIZED,
         }
@@ -76,6 +85,7 @@ impl Failure {
             Self::Config(_) => "This deployment is not configured correctly.",
             Self::Database(_) => "The database did not answer.",
             Self::Upstream(_) => "A service noal depends on did not answer.",
+            Self::Model(_) => "The model did not answer.",
             Self::Auth(_) => "That sign-in could not be completed.",
             Self::Session(_) | Self::NotSignedIn => "Please sign in.",
         }

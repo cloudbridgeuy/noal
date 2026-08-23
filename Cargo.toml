@@ -56,11 +56,17 @@ noal_view = { version = "0.0.0", path = "crates/view" }
 
 # The Workers runtime. `http` + `axum` let axum serve a fetch event.
 # `tokio-postgres` supplies PassthroughTls and the TlsConnect<Socket> impl.
-worker = { version = "0.8", features = ["http", "axum", "tokio-postgres"] }
-worker-macros = { version = "0.8", features = ["http"] }
+#
+# Pinned to =0.8.3. From 0.8.4, worker requires wasm-streams ^0.6, while
+# reqwest (pulled in by rig-core) requires ^0.5; cargo links both copies and
+# their wasm_bindgen glue symbols collide at the wasm-bindgen linker step.
+# Lift the pin once a published reqwest requires wasm-streams ^0.6.
+worker = { version = "=0.8.3", features = ["http", "axum", "tokio-postgres"] }
+worker-macros = { version = "=0.8.3", features = ["http"] }
 
 # Routing. default-features = false keeps tokio and hyper out of the Wasm build.
-axum = { version = "0.8", default-features = false }
+# `form` decodes the ask form's urlencoded body; it needs no tokio or hyper.
+axum = { version = "0.8", default-features = false, features = ["form"] }
 tower-service = "0.3"
 
 # Postgres. The `js` feature swaps entropy and time for the JS host's.
@@ -68,6 +74,10 @@ tokio-postgres = { version = "0.7", default-features = false, features = ["js"] 
 
 # HTML. Compile-time templates, so no runtime file I/O and no Wasm penalty.
 maud = "0.27"
+
+# Runtime templates written by the model. Version 2 has empty default features,
+# so nothing filesystem- or clock-shaped reaches the Wasm build.
+tera = { version = "2.2", default-features = false }
 
 # Session cookie sealing. Pure Rust, so the hot path stays Send.
 chacha20poly1305 = "0.10"
@@ -99,6 +109,16 @@ console_error_panic_hook = "0.1"
 # axum needs Send handler futures; the Workers JS bindings are Rc-based.
 # Sound on wasm32-unknown-unknown, which has a single thread.
 send_wrapper = { version = "0.6", features = ["futures"] }
+
+# The model client. On wasm32 its reqwest uses the browser Fetch API, so the
+# resulting futures are !Send and must sit inside SendWrapper, like WorkOS.
+rig-core = { version = "0.42", default-features = false }
+
+# Pinned so cargo unifies it with the schemars re-exported by rig-core.
+schemars = "1"
+
+# Joining more than one model call in one handler.
+futures-util = { version = "0.3", default-features = false }
 
 # Native-only, for xtask
 clap = { version = "4.5", features = ["derive", "string", "env"] }

@@ -10,5 +10,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![deny(missing_docs)]
 
+pub mod ask;
 pub mod layout;
 pub mod pages;
+pub mod render;

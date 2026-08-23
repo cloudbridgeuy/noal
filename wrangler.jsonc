@@ -27,7 +27,8 @@
   // Public settings. Secrets are not here; see .dev.vars.example.
   "vars": {
     "WORKOS_CLIENT_ID": "",
-    "REDIRECT_URI": "http://localhost:8787/auth/callback"
+    "REDIRECT_URI": "http://localhost:8787/auth/callback",
+    "LLM_BASE_URL": "https://api.anthropic.com"
   },
 
   "observability": {

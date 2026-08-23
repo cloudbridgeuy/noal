@@ -19,6 +19,14 @@ pub struct Config {
     pub workos_api_key: String,
     /// Where WorkOS sends the browser back after a sign-in.
     pub redirect_uri: String,
+    /// The Anthropic API key. Secret; it must never reach a response or a log.
+    pub anthropic_api_key: String,
+    /// The Cloudflare AI Gateway token, when calls go through a gateway.
+    /// Secret. `None` means no `cf-aig-authorization` header is sent.
+    pub ai_gateway_token: Option<String>,
+    /// Where the Anthropic API is reached: the gateway's Anthropic path, or
+    /// `https://api.anthropic.com` to call it directly.
+    pub llm_base_url: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -33,6 +41,12 @@ impl std::fmt::Debug for Config {
             .field("workos_client_id", &self.workos_client_id)
             .field("workos_api_key", &"<redacted>")
             .field("redirect_uri", &self.redirect_uri)
+            .field("anthropic_api_key", &"<redacted>")
+            .field(
+                "ai_gateway_token",
+                &self.ai_gateway_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("llm_base_url", &self.llm_base_url)
             .finish()
     }
 }
@@ -64,6 +78,9 @@ impl Config {
             workos_client_id: var(env, "WORKOS_CLIENT_ID")?,
             workos_api_key: secret(env, "WORKOS_API_KEY")?,
             redirect_uri: var(env, "REDIRECT_URI")?,
+            anthropic_api_key: secret(env, "ANTHROPIC_API_KEY")?,
+            ai_gateway_token: secret(env, "AI_GATEWAY_TOKEN").ok(),
+            llm_base_url: var(env, "LLM_BASE_URL")?,
         })
     }
 }
@@ -87,4 +104,50 @@ fn secret(env: &Env, name: &'static str) -> Result<String, ConfigError> {
         .map(|value| value.to_string())
         .filter(|value| !value.is_empty())
         .map_or_else(|| var(env, name), Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::Config;
+    use noal_core::session::SessionKey;
+
+    /// A `Config` with recognisable, non-empty values in every secret field,
+    /// so a redaction bug shows up as that value appearing in `{:?}` output.
+    fn config() -> Config {
+        Config {
+            session_key: SessionKey::from_bytes([7u8; 32]),
+            workos_client_id: "client-public".to_owned(),
+            workos_api_key: "workos-secret-value".to_owned(),
+            redirect_uri: "http://localhost:8787/auth/callback".to_owned(),
+            anthropic_api_key: "anthropic-secret-value".to_owned(),
+            ai_gateway_token: Some("gateway-secret-value".to_owned()),
+            llm_base_url: "https://api.anthropic.com".to_owned(),
+        }
+    }
+
+    #[test]
+    fn debug_output_holds_no_key_material() {
+        let printed = format!("{:?}", config());
+
+        assert!(!printed.contains("workos-secret-value"));
+        assert!(!printed.contains("anthropic-secret-value"));
+        assert!(!printed.contains("gateway-secret-value"));
+
+        // The public fields still print, so the redaction is not hiding the
+        // whole struct — only the secrets.
+        assert!(printed.contains("client-public"));
+        assert!(printed.contains("https://api.anthropic.com"));
+    }
+
+    #[test]
+    fn debug_output_redacts_a_missing_gateway_token_the_same_way() {
+        let mut without_gateway = config();
+        without_gateway.ai_gateway_token = None;
+
+        let printed = format!("{:?}", without_gateway);
+
+        assert!(printed.contains("ai_gateway_token: None"));
+    }
 }

@@ -21,3 +21,12 @@ REDIRECT_URI=http://localhost:8787/auth/callback
 # Not read by the Worker. `wrangler dev` uses this instead of a real Hyperdrive
 # binding, so a local run needs no Cloudflare resource.
 WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB=postgres://user:password@localhost:5432/noal
+
+# The model. ANTHROPIC_API_KEY is required. LLM_BASE_URL is either the
+# Cloudflare AI Gateway Anthropic path,
+#   https://gateway.ai.cloudflare.com/v1/<account_id>/noal/anthropic
+# or https://api.anthropic.com to call Anthropic directly. AI_GATEWAY_TOKEN is
+# only read when the gateway has authentication turned on.
+ANTHROPIC_API_KEY=
+AI_GATEWAY_TOKEN=
+LLM_BASE_URL=https://api.anthropic.com

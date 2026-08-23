@@ -1,10 +1,74 @@
 //! The page chrome shared by every full document.
 
-use maud::{html, Markup, DOCTYPE};
+use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 /// The htmx build noal loads. Pinned, and served with an integrity hash, so a
 /// change to the CDN cannot change what runs in the browser.
 const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js";
+
+/// Enough CSS to make the page and the overlay usable. No framework yet.
+const STYLE: &str = r"
+body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 0 1rem; max-width: 72rem; margin-inline: auto; }
+header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #ddd; }
+#ask-form { display: grid; gap: .5rem; max-width: 40rem; margin: 2rem 0; }
+#ask-form input { font: inherit; padding: .5rem; }
+.htmx-indicator { display: none; } .htmx-request .htmx-indicator { display: inline; }
+table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .25rem .5rem; text-align: left; }
+#debug-toggle { position: fixed; right: 1rem; bottom: 1rem; z-index: 10; }
+#debug-panel { position: fixed; inset: 0 0 0 auto; width: min(40rem, 100%); background: #111; color: #eee;
+  overflow: auto; padding: 1rem; font: 13px/1.4 ui-monospace, monospace; z-index: 9; }
+#debug-panel[hidden] { display: none; }
+#debug-panel pre { white-space: pre-wrap; background: #222; padding: .5rem; }
+";
+
+/// The script that toggles the panel and fills it from the last answer.
+///
+/// It reads `#ask-debug` after every htmx swap, so each answer carries its own
+/// data and the chrome never needs to know what an ask is.
+const OVERLAY_SCRIPT: &str = r#"
+(function () {
+  var panel = document.getElementById('debug-panel');
+  var toggle = document.getElementById('debug-toggle');
+  function show(on) { panel.hidden = !on; }
+  toggle.addEventListener('click', function () { show(panel.hidden); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '`' && !/INPUT|TEXTAREA/.test(e.target.tagName)) { e.preventDefault(); show(panel.hidden); }
+  });
+  function render(data) {
+    var out = document.getElementById('debug-content');
+    function block(title, text) {
+      return '<h3>' + title + '</h3><pre>' + String(text).replace(/[&<>]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }) + '</pre>';
+    }
+    var html = block('request', data.request);
+    if (data.failed_stage) html += block('failed stage', data.failed_stage);
+    if (data.plan) { html += block('sql', data.plan.sql); html += block('shape', JSON.stringify(data.plan.shape, null, 2)); }
+    if (data.template) html += block('template', data.template);
+    (data.attempts || []).forEach(function (a, i) {
+      html += block('attempt ' + (i + 1) + ' · ' + a.stage, a.artifact + '\n\n--- error ---\n' + a.error);
+    });
+    html += block('timings', (data.timings || []).map(function (t) { return t.stage + ': ' + t.millis + ' ms'; }).join('\n'));
+    out.innerHTML = html;
+  }
+  document.body.addEventListener('htmx:afterSwap', function () {
+    var el = document.getElementById('ask-debug');
+    if (!el) return;
+    try { render(JSON.parse(el.textContent)); } catch (err) { console.error('debug payload', err); }
+  });
+})();
+"#;
+
+/// The hidden panel and its toggle, present on every page.
+fn debug_overlay() -> Markup {
+    html! {
+        button #debug-toggle type="button" title="Toggle debug panel (`)" { "debug" }
+        aside #debug-panel hidden {
+            h2 { "debug" }
+            div #debug-content { p { "Ask something; the plan, template, and timings appear here." } }
+        }
+        script { (PreEscaped(OVERLAY_SCRIPT)) }
+    }
+}
 
 /// Who is looking at the page. `view` renders differently for a signed-in user,
 /// so the shell passes identity in rather than the template reaching for it.
@@ -34,10 +98,12 @@ pub fn page(title: &str, viewer: &Viewer, body: &Markup) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · noal" }
                 script src=(HTMX_SRC) defer {}
+                style { (PreEscaped(STYLE)) }
             }
             body {
                 header { (header(viewer)) }
                 main { (body) }
+                (debug_overlay())
             }
         }
     }
@@ -74,6 +140,13 @@ mod tests {
         assert!(rendered.starts_with("<!DOCTYPE html>"));
         assert!(rendered.contains("<title>Home · noal</title>"));
         assert!(rendered.contains("<p>hello</p>"));
+    }
+
+    #[test]
+    fn every_page_carries_the_debug_overlay() {
+        let rendered = page("Home", &Viewer::Anonymous, &html! {}).into_string();
+        assert!(rendered.contains("id=\"debug-panel\""));
+        assert!(rendered.contains("htmx:afterSwap"));
     }
 
     #[test]
