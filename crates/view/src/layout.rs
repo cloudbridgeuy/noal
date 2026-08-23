@@ -19,6 +19,8 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
   overflow: auto; padding: 1rem; font: 13px/1.4 ui-monospace, monospace; z-index: 9; }
 #debug-panel[hidden] { display: none; }
 #debug-panel pre { white-space: pre-wrap; background: #222; padding: .5rem; }
+#debug-panel header { display: flex; align-items: baseline; gap: 1rem; }
+#debug-copy { font: inherit; }
 ";
 
 /// The script that toggles the panel and fills it from the last answer.
@@ -31,9 +33,6 @@ const OVERLAY_SCRIPT: &str = r#"
   var toggle = document.getElementById('debug-toggle');
   function show(on) { panel.hidden = !on; }
   toggle.addEventListener('click', function () { show(panel.hidden); });
-  document.addEventListener('keydown', function (e) {
-    if (e.key === '`' && !/INPUT|TEXTAREA/.test(e.target.tagName)) { e.preventDefault(); show(panel.hidden); }
-  });
   function render(data) {
     var out = document.getElementById('debug-content');
     function block(title, text) {
@@ -55,15 +54,39 @@ const OVERLAY_SCRIPT: &str = r#"
     if (!el) return;
     try { render(JSON.parse(el.textContent)); } catch (err) { console.error('debug payload', err); }
   });
+  var copy = document.getElementById('debug-copy');
+  copy.addEventListener('click', function () {
+    var el = document.getElementById('ask-debug');
+    var text = el ? el.textContent : '';
+    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (err) { /* copy it raw */ }
+    if (!text) { copy.textContent = 'nothing yet'; }
+    else {
+      // A textarea works without the clipboard permission, and on every
+      // browser this runs in, so it is the only path rather than a fallback.
+      var box = document.createElement('textarea');
+      box.value = text;
+      box.setAttribute('readonly', '');
+      box.style.position = 'fixed';
+      box.style.opacity = '0';
+      document.body.appendChild(box);
+      box.select();
+      copy.textContent = document.execCommand('copy') ? 'copied' : 'copy failed';
+      document.body.removeChild(box);
+    }
+    setTimeout(function () { copy.textContent = 'copy'; }, 1500);
+  });
 })();
 "#;
 
 /// The hidden panel and its toggle, present on every page.
 fn debug_overlay() -> Markup {
     html! {
-        button #debug-toggle type="button" title="Toggle debug panel (`)" { "debug" }
+        button #debug-toggle type="button" title="Toggle debug panel" { "debug" }
         aside #debug-panel hidden {
-            h2 { "debug" }
+            header {
+                h2 { "debug" }
+                button #debug-copy type="button" { "copy" }
+            }
             div #debug-content { p { "Ask something; the plan, template, and timings appear here." } }
         }
         script { (PreEscaped(OVERLAY_SCRIPT)) }

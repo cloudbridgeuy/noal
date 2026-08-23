@@ -93,7 +93,13 @@ base64 = "0.22"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps a JSON object's keys in insertion order. noal needs it
+# for one reason: `schemars` builds a schema's `properties` as a
+# `serde_json::Map`, and without this feature that map sorts alphabetically,
+# discarding the field order the struct declares. A provider that constrains
+# decoding to the schema emits properties in schema order, so the sort decides
+# what the model must write first. See `ask::plan::schema_order`.
+serde_json = { version = "1", features = ["preserve_order"] }
 
 # Time. `wasmbind` makes Utc::now() work through the JS Date object.
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "wasmbind"] }

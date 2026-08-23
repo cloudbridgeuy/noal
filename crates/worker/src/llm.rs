@@ -26,6 +26,18 @@ use crate::failure::Failure;
 /// choice belongs to whoever is making the call, not to this module.
 pub const PLAN_MODEL: &str = "claude-sonnet-5";
 
+/// The output budget every call in this module sets.
+///
+/// Anthropic rejects a request that does not carry `max_tokens`, and rig only
+/// supplies a default for the model names its own table knows. `PLAN_MODEL` is
+/// not one of them, so an unset budget is a request that never leaves the
+/// isolate. Setting it here makes the budget this module's decision rather
+/// than a property of whichever rig version is linked.
+///
+/// The value is generous for what noal asks for — one SQL plan or one
+/// template — and far below the model's ceiling, so it truncates nothing.
+pub const MAX_OUTPUT_TOKENS: u64 = 8_192;
+
 /// Ask the model a question and return its first block of text, unparsed.
 ///
 /// # Errors
@@ -38,7 +50,11 @@ pub async fn text(config: &Config, preamble: &str, prompt: String) -> Result<Str
     SendWrapper::new(async move {
         let client = settings.client()?;
         let model = client.completion_model(PLAN_MODEL);
-        let request = model.completion_request(prompt).preamble(preamble).build();
+        let request = model
+            .completion_request(prompt)
+            .preamble(preamble)
+            .max_tokens(MAX_OUTPUT_TOKENS)
+            .build();
         let response = model.completion(request).await.map_err(Failure::model)?;
         first_text(&response.choice)
     })
@@ -67,6 +83,7 @@ where
         let request = model
             .completion_request(prompt)
             .preamble(preamble)
+            .max_tokens(MAX_OUTPUT_TOKENS)
             .output_schema(schemars::schema_for!(T))
             .build();
         let response = model.completion(request).await.map_err(Failure::model)?;
