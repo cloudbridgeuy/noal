@@ -48,7 +48,9 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 ///
 /// It reads `#ask-debug` after every htmx swap. That element is chrome, kept
 /// current by an out-of-band swap alongside every answer, so this script
-/// never needs to know what an ask is or where its fragment landed.
+/// never needs to know where an ask's fragment landed on the page — but it
+/// does know what an ask is, now: a `401` from `/ask` sends the browser to
+/// sign in, and any other failure becomes a toast.
 ///
 /// `#palette` is absent on most pages (an anonymous viewer, an error page),
 /// so the palette wiring is guarded on finding it first and does nothing on a
@@ -104,6 +106,46 @@ const OVERLAY_SCRIPT: &str = r#"
       document.body.removeChild(box);
     }
     setTimeout(function () { copy.textContent = 'copy'; }, 1500);
+  });
+  // Clones the hidden `#toast-offline` template (see `page()`) rather than
+  // build the markup here, so the wording lives in exactly one place: the
+  // same `layout::toast` call every other toast's markup comes from.
+  function appendOfflineToast(toasts) {
+    var template = document.getElementById('toast-offline');
+    if (template) toasts.appendChild(template.content.cloneNode(true));
+  }
+  // Registered here, ahead of the palette lookup below, on purpose: `#ask-form`
+  // is the only element that posts an htmx request today, but gating a `401`
+  // redirect on the palette being present would mean the redirect silently
+  // did nothing on a palette-less page that made one, and the redirect needs
+  // no element from the page to run.
+  document.body.addEventListener('htmx:responseError', function (event) {
+    var xhr = event.detail.xhr;
+    if (xhr.status === 401) {
+      // A missing or expired session cookie: send the browser to sign in and
+      // back to the page it was asking from, rather than leaving a stale
+      // toast or an empty swap where the answer should be.
+      var next = encodeURIComponent(location.pathname + location.search);
+      location.href = '/auth/login?next=' + next;
+      return;
+    }
+    var toasts = document.getElementById('toasts');
+    if (!toasts) return;
+    // A rendered failure carries its own toast markup as the response body
+    // (see `Failure::toast`). An empty body on a non-200 is not expected
+    // from noal's own routes, but falls back to the same offline wording a
+    // dropped connection shows rather than appending nothing.
+    if (xhr.responseText) {
+      toasts.insertAdjacentHTML('beforeend', xhr.responseText);
+    } else {
+      appendOfflineToast(toasts);
+    }
+  });
+  // Fired when the request never reached a response at all -- the Worker is
+  // unreachable, not merely answering with an error.
+  document.body.addEventListener('htmx:sendError', function () {
+    var toasts = document.getElementById('toasts');
+    if (toasts) appendOfflineToast(toasts);
   });
   var palette = document.getElementById('palette');
   if (palette) {
@@ -243,6 +285,26 @@ pub fn toast(message: &str) -> Markup {
     }
 }
 
+/// What a viewer is told when a request never reached noal at all.
+const OFFLINE_MESSAGE: &str = "noal could not be reached. Check your connection and try again.";
+
+/// The hidden markup a dropped connection clones into `#toasts`.
+///
+/// A `<template>`'s content is inert — the browser parses it but never
+/// renders or runs it — so it can sit on every page, present but invisible,
+/// until `OVERLAY_SCRIPT`'s `htmx:sendError` listener clones it. The toast
+/// inside is built by [`toast`], the same call every other toast's markup
+/// comes from, so the offline wording is never a second string to keep in
+/// step with it.
+#[must_use]
+fn toast_offline() -> Markup {
+    html! {
+        template #toast-offline {
+            (toast(OFFLINE_MESSAGE))
+        }
+    }
+}
+
 /// Who is looking at the page. `view` renders differently for a signed-in user,
 /// so the shell passes identity in rather than the template reaching for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +363,7 @@ pub fn page(title: &str, viewer: &Viewer, palette: Palette, body: &Markup) -> Ma
                     // A sibling of #palette, never a child: a toast must stay
                     // visible even while the palette itself is hidden.
                     (toasts())
+                    (toast_offline())
                 }
                 main { (body) }
                 (debug_overlay())
@@ -347,7 +410,7 @@ pub fn header(viewer: &Viewer) -> Markup {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{debug_payload, header, page, toast, toasts, Palette, Viewer};
+    use super::{debug_payload, header, page, toast, toasts, Palette, Viewer, OFFLINE_MESSAGE};
     use maud::html;
     use noal_core::ask::outcome::{Debug, Outcome, Stage, Verdict};
 
@@ -540,6 +603,30 @@ mod tests {
     }
 
     #[test]
+    fn an_open_palette_carries_a_hidden_offline_toast_template() {
+        let rendered = page(
+            "Home",
+            &Viewer::SignedIn {
+                email: "someone@example.com".to_owned(),
+            },
+            Palette::Open,
+            &html! {},
+        )
+        .into_string();
+        assert!(rendered.contains(r#"<template id="toast-offline">"#));
+        // The wording comes from the one function every other toast reads
+        // from, not a second copy typed into the template.
+        assert!(rendered.contains(OFFLINE_MESSAGE));
+        assert!(rendered.contains(r#"class="toast""#));
+    }
+
+    #[test]
+    fn a_closed_palette_carries_no_offline_toast_template_either() {
+        let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
+        assert!(!rendered.contains(r#"id="toast-offline""#));
+    }
+
+    #[test]
     fn an_anonymous_viewer_is_offered_sign_in() {
         let rendered = header(&Viewer::Anonymous).into_string();
         assert!(rendered.contains("/auth/login"));
@@ -648,5 +735,59 @@ mod tests {
         // #debug-toggle is the highest z-index otherwise in play, at 10.
         assert!(super::STYLE.contains("#toasts { position: fixed;"));
         assert!(super::STYLE.contains("z-index: 11;"));
+    }
+
+    #[test]
+    fn the_overlay_script_registers_the_response_error_listener_before_the_palette_guard() {
+        // A 401 must reach sign-in even on a page with no palette at all, so
+        // this listener cannot live inside `if (palette)`.
+        let script = super::OVERLAY_SCRIPT;
+        let listener_at = script.find("htmx:responseError").unwrap();
+        let guard_at = script
+            .find("var palette = document.getElementById('palette');")
+            .unwrap();
+        assert!(listener_at < guard_at);
+    }
+
+    #[test]
+    fn the_overlay_script_sends_a_401_to_sign_in_with_the_current_page_as_next() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("xhr.status === 401"));
+        assert!(script.contains("/auth/login?next="));
+        assert!(script.contains("encodeURIComponent(location.pathname + location.search)"));
+    }
+
+    #[test]
+    fn the_overlay_script_checks_401_before_appending_any_other_response_error() {
+        let script = super::OVERLAY_SCRIPT;
+        let status_at = script.find("xhr.status === 401").unwrap();
+        let append_at = script.find("insertAdjacentHTML").unwrap();
+        assert!(status_at < append_at);
+    }
+
+    #[test]
+    fn the_overlay_script_appends_a_non_401_error_body_to_toasts() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("document.getElementById('toasts')"));
+        assert!(script.contains("toasts.insertAdjacentHTML('beforeend', xhr.responseText)"));
+    }
+
+    #[test]
+    fn the_overlay_script_clones_the_offline_template_on_a_send_error() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("htmx:sendError"));
+        assert!(script.contains("getElementById('toast-offline')"));
+        assert!(script.contains("template.content.cloneNode(true)"));
+    }
+
+    #[test]
+    fn the_overlay_script_also_falls_back_to_the_offline_toast_on_an_empty_error_body() {
+        // "any non-200 with an empty body" from the response-error listener
+        // takes the same fallback path as a send error.
+        let script = super::OVERLAY_SCRIPT;
+        let response_error_at = script.find("htmx:responseError").unwrap();
+        let send_error_at = script.find("htmx:sendError").unwrap();
+        let between = &script[response_error_at..send_error_at];
+        assert!(between.contains("appendOfflineToast(toasts)"));
     }
 }
