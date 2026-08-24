@@ -7,16 +7,31 @@
 use maud::{html, Markup, PreEscaped};
 use noal_core::ask::outcome::{Outcome, Stage, Verdict};
 
-/// The form that starts an ask. Submitting it replaces it with the answer.
+/// The form that starts an ask. Submitting it replaces `#ask-result`, wherever
+/// on the page that lives, leaving the form itself in place.
 #[must_use]
 pub fn form() -> Markup {
     html! {
-        form #ask-form hx-post="/ask" hx-target="this" hx-swap="outerHTML" hx-indicator="#ask-busy" {
+        form #ask-form hx-post="/ask" hx-target="#ask-result" hx-swap="outerHTML" hx-indicator="#ask-busy" {
             label for="ask-input" { "What do you want to see?" }
             input #ask-input name="request" type="text" required autofocus
                 placeholder="open tasks under the Render MVP epic, with comments";
             button type="submit" { "Ask" }
             span #ask-busy .htmx-indicator { "Thinking…" }
+        }
+    }
+}
+
+/// `#ask-result`'s resting state, before any ask has been made.
+///
+/// Shares its shape with [`answer`]'s answered arm — a `section #ask-result`
+/// wrapping a `div.ask-answer` — so the first swap changes only the content,
+/// never the element the form targets.
+#[must_use]
+pub fn greeting() -> Markup {
+    html! {
+        section #ask-result {
+            div .ask-answer { "noal" }
         }
     }
 }
@@ -54,7 +69,7 @@ const fn failure_text(stage: Stage) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, form};
+    use super::{answer, form, greeting};
     use noal_core::ask::outcome::{Debug, Outcome, Stage, Verdict};
 
     fn outcome(verdict: Verdict) -> Outcome {
@@ -66,11 +81,20 @@ mod tests {
     }
 
     #[test]
-    fn the_form_posts_to_ask_and_swaps_itself() {
+    fn the_form_posts_to_ask_and_swaps_the_result_target() {
         let html = form().into_string();
         assert!(html.contains("hx-post=\"/ask\""));
+        assert!(html.contains("hx-target=\"#ask-result\""));
         assert!(html.contains("hx-swap=\"outerHTML\""));
         assert!(html.contains("name=\"request\""));
+    }
+
+    #[test]
+    fn the_greeting_fills_ask_result_with_the_shape_answer_will_reuse() {
+        let html = greeting().into_string();
+        assert!(html.contains("id=\"ask-result\""));
+        assert!(html.contains("class=\"ask-answer\""));
+        assert!(html.contains("noal"));
     }
 
     #[test]

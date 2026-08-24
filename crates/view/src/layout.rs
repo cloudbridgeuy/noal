@@ -106,13 +106,27 @@ pub enum Viewer {
     },
 }
 
+/// Whether a page carries a working command palette.
+///
+/// There is no closed-but-present state: a page either has the palette, open
+/// and focused, with its `#ask-result` swap target alongside it, or it has
+/// neither. A palette with nowhere to swap into would be decoration, so the
+/// two always travel together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Palette {
+    /// The palette is on the page, visible and holding focus.
+    Open,
+    /// The page has no palette at all.
+    Closed,
+}
+
 /// Wrap body markup in the full document chrome.
 ///
 /// Use this for a normal navigation. For an htmx swap, return the fragment on
 /// its own instead; sending a whole document into a swap target nests one
 /// `<html>` inside another.
 #[must_use]
-pub fn page(title: &str, viewer: &Viewer, body: &Markup) -> Markup {
+pub fn page(title: &str, viewer: &Viewer, palette: Palette, body: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -125,9 +139,26 @@ pub fn page(title: &str, viewer: &Viewer, body: &Markup) -> Markup {
             }
             body {
                 header { (header(viewer)) }
+                @if matches!(palette, Palette::Open) {
+                    (render_palette())
+                }
                 main { (body) }
                 (debug_overlay())
             }
+        }
+    }
+}
+
+/// The command palette itself: a toggle and the ask form, in its own chrome.
+///
+/// Rendered only from [`page`], and only for [`Palette::Open`]. The toggle
+/// button has no click behaviour yet — wiring it is a later slice's job — so
+/// this renders the affordance without pretending it does anything today.
+fn render_palette() -> Markup {
+    html! {
+        div #palette {
+            button #palette-toggle type="button" title="Command palette" { "Palette" }
+            (crate::ask::form())
         }
     }
 }
@@ -153,12 +184,17 @@ pub fn header(viewer: &Viewer) -> Markup {
 
 #[cfg(test)]
 mod tests {
-    use super::{header, page, Viewer};
+    use super::{header, page, Palette, Viewer};
     use maud::html;
 
     #[test]
     fn a_page_is_a_whole_document() {
-        let markup = page("Home", &Viewer::Anonymous, &html! { p { "hello" } });
+        let markup = page(
+            "Home",
+            &Viewer::Anonymous,
+            Palette::Closed,
+            &html! { p { "hello" } },
+        );
         let rendered = markup.into_string();
         assert!(rendered.starts_with("<!DOCTYPE html>"));
         assert!(rendered.contains("<title>Home · noal</title>"));
@@ -167,9 +203,33 @@ mod tests {
 
     #[test]
     fn every_page_carries_the_debug_overlay() {
-        let rendered = page("Home", &Viewer::Anonymous, &html! {}).into_string();
+        let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
         assert!(rendered.contains("id=\"debug-panel\""));
         assert!(rendered.contains("htmx:afterSwap"));
+    }
+
+    #[test]
+    fn a_closed_palette_puts_no_palette_markup_on_the_page() {
+        let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
+        assert!(!rendered.contains("id=\"palette\""));
+        assert!(!rendered.contains("id=\"ask-form\""));
+    }
+
+    #[test]
+    fn an_open_palette_is_focused_and_unhidden() {
+        let rendered = page(
+            "Home",
+            &Viewer::SignedIn {
+                email: "someone@example.com".to_owned(),
+            },
+            Palette::Open,
+            &html! {},
+        )
+        .into_string();
+        assert!(rendered.contains("id=\"palette\""));
+        assert!(!rendered.contains("id=\"palette\" hidden"));
+        assert!(rendered.contains("autofocus"));
+        assert!(rendered.contains("id=\"ask-input\""));
     }
 
     #[test]
