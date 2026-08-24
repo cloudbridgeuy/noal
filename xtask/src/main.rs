@@ -5,8 +5,9 @@
 //!
 //! `lint` runs every quality check in order and manages the Git pre-commit
 //! hook. `migrate` applies the SQL files under `migrations/` to a Postgres
-//! database. `dev` fills in whatever the local environment lacks — pnpm, Node
-//! dependencies, the Wasm target, worker-build — and then starts wrangler.
+//! database. `dev` checks `.dev.vars`, fills in whatever else the local
+//! environment lacks — pnpm, Node dependencies, the Wasm target,
+//! worker-build — and then starts wrangler.
 //!
 //! This crate builds for the host, never for Wasm. It is the only place in the
 //! repository that may talk to a database over a normal TCP socket, because
@@ -14,6 +15,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 mod dev;
+mod dev_vars;
 mod lint;
 mod migrate;
 

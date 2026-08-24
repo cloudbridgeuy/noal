@@ -5,9 +5,10 @@
 //! presence from injected values. Those decisions are pure, so they are unit
 //! tested without touching the filesystem or spawning a process.
 //!
-//! The bottom half is the shell: it probes for tools, reads modification
-//! times, runs each fix with its output inherited so failures speak for
-//! themselves, and finally replaces this process with wrangler.
+//! The bottom half is the shell: it reads `.dev.vars`, probes for tools,
+//! reads modification times, runs each fix with its output inherited so
+//! failures speak for themselves, and finally replaces this process with
+//! wrangler.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,8 @@ use std::time::SystemTime;
 
 use clap::Args;
 use color_eyre::eyre::{eyre, Result, WrapErr};
+
+use crate::dev_vars;
 
 /// The compilation target the Worker crate needs.
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
@@ -167,6 +170,8 @@ pub struct DevArgs {
 /// Returns an error when Node is missing entirely or any fix command fails;
 /// the failing tool's own output has already been printed by then.
 pub fn run(args: &DevArgs) -> Result<()> {
+    check_dev_vars()?;
+
     let facts = gather_facts();
 
     let steps = plan(&facts).map_err(|error| eyre!("{error}"))?;
@@ -181,6 +186,46 @@ pub fn run(args: &DevArgs) -> Result<()> {
     }
 
     start_wrangler(&args.wrangler_args)
+}
+
+/// Judge `.dev.vars` before anything is installed or started.
+///
+/// This runs ahead of every prerequisite fix on purpose: wrangler 4 ignores
+/// the legacy Hyperdrive variable name, so a stale file would otherwise start
+/// a server with no database behind it and only fail at request time. All
+/// gaps are named in one pass. Values are never printed — they are secrets.
+///
+/// # Errors
+///
+/// Returns an error when the file is missing, unreadable, or has gaps; the
+/// message names exactly what is wrong and how to fix it.
+fn check_dev_vars() -> Result<()> {
+    let root = workspace_root();
+    let file = dev_vars::path(&root);
+
+    let contents = match dev_vars::read(&root) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(eyre!(
+                "{} is missing. Copy the example into place first:\n  cp .dev.vars.example .dev.vars",
+                file.display()
+            ));
+        }
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("could not read {}", file.display()));
+        }
+    };
+
+    let problems = dev_vars::gaps(&dev_vars::parse(&contents));
+    if problems.is_empty() {
+        return Ok(());
+    }
+
+    let mut report = format!("{} needs attention before dev can start:", file.display());
+    for problem in &problems {
+        report.push_str(&format!("\n  - {problem}"));
+    }
+    Err(eyre!(report))
 }
 
 /// Probe the machine once, before anything changes.
