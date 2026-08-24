@@ -15,7 +15,7 @@
   // Hyperdrive holds the connection pool and terminates TLS to Neon.
   //
   // `id` is only needed to deploy. For `wrangler dev`, leave the placeholder
-  // and set WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB to the Neon URL,
+  // and set CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB to the Neon URL,
   // which keeps the credential out of this file.
   "hyperdrive": [
     {

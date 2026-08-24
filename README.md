@@ -45,7 +45,7 @@ cargo xtask dev
 URL. The example file explains each one and how to generate the key.
 
 `wrangler dev` connects straight to the Postgres URL in
-`WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB`, so a local run needs no
+`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB`, so a local run needs no
 Cloudflare resource. A deploy needs a real Hyperdrive `id` in `wrangler.jsonc`.
 
 Extra arguments reach wrangler verbatim:
