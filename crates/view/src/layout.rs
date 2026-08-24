@@ -33,6 +33,14 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
   box-shadow: 0 .25rem 1rem rgba(0, 0, 0, .15); padding: 1rem; }
 #palette[hidden] { display: none; }
 #palette #ask-form { margin: 0; }
+/* Bottom-left, the corner #palette's own comment reserves for exactly this.
+   Highest z-index of the set: a failure notice must never end up hidden
+   behind the debug panel (9) or its toggle (10), so 11 sits above both. */
+#toasts { position: fixed; left: 1rem; bottom: 1rem; z-index: 11; display: grid; gap: .5rem; max-width: 24rem; }
+.toast { display: flex; align-items: flex-start; gap: .75rem; background: #fff; border: 1px solid #ddd;
+  border-radius: .5rem; box-shadow: 0 .25rem 1rem rgba(0, 0, 0, .15); padding: .75rem 1rem; }
+.toast p { margin: 0; flex: 1; }
+.toast-dismiss { font: inherit; }
 ";
 
 /// The script that toggles the panel and fills it from the last answer, and
@@ -101,6 +109,9 @@ const OVERLAY_SCRIPT: &str = r#"
   if (palette) {
     var paletteToggle = document.getElementById('palette-toggle');
     var paletteInput = document.getElementById('ask-input');
+    // #toasts is a sibling of #palette, rendered under the same condition,
+    // so whenever this block runs it is on the page too.
+    var toasts = document.getElementById('toasts');
     // navigator.platform is deprecated, but it is the only signal small
     // enough for a tooltip this size; a wrong guess here is cosmetic.
     paletteToggle.title = /Mac/.test(navigator.platform)
@@ -112,6 +123,18 @@ const OVERLAY_SCRIPT: &str = r#"
       palette.hidden = !palette.hidden;
       if (!palette.hidden && paletteInput) paletteInput.focus();
     }
+    // Removes one toast. The server only ever appends with `beforeend`, so
+    // `#toasts`' last child is always the newest.
+    function dismissToast(el) {
+      el.remove();
+    }
+    // Delegated: toasts arrive from the server, appended long after this
+    // listener is registered, so a listener bound to each toast would miss
+    // every one that shows up later.
+    toasts.addEventListener('click', function (event) {
+      var dismiss = event.target.closest('.toast-dismiss');
+      if (dismiss) dismissToast(dismiss.closest('.toast'));
+    });
     paletteToggle.addEventListener('click', togglePalette);
     document.addEventListener('keydown', function (event) {
       var target = event.target;
@@ -123,8 +146,15 @@ const OVERLAY_SCRIPT: &str = r#"
           event.key.toLowerCase() === 'k') {
         event.preventDefault();
         togglePalette();
-      } else if (event.key === 'Escape' && !palette.hidden) {
-        togglePalette();
+      } else if (event.key === 'Escape') {
+        // The newest toast goes first: one Escape clears it, and only the
+        // next Escape — once none remain — closes the palette.
+        var newestToast = toasts.lastElementChild;
+        if (newestToast) {
+          dismissToast(newestToast);
+        } else if (!palette.hidden) {
+          togglePalette();
+        }
       }
     });
   }
@@ -165,6 +195,35 @@ pub fn debug_payload(outcome: &Outcome) -> Markup {
     html! {
         script #ask-debug type="application/json" hx-swap-oob="outerHTML" {
             (PreEscaped(outcome.debug_json()))
+        }
+    }
+}
+
+/// The empty toast region, present whenever the palette is.
+///
+/// `aria-live="polite"` is why a screen reader announces a toast appended
+/// here without anything else on the page changing: a refusal can land
+/// while the user is still looking at, or typing into, the palette.
+#[must_use]
+pub fn toasts() -> Markup {
+    html! {
+        div #toasts aria-live="polite" {}
+    }
+}
+
+/// One toast: wording the user can read and select, plus a control to
+/// dismiss it.
+///
+/// The dismiss control is a button *inside* the toast, not the toast itself.
+/// A toast carries wording a user may want to copy, so making the whole
+/// toast clickable would dismiss it on a text selection, and a screen
+/// reader would announce the whole message as a button rather than as text.
+#[must_use]
+pub fn toast(message: &str) -> Markup {
+    html! {
+        div .toast {
+            p { (message) }
+            button .toast-dismiss type="button" aria-label="Dismiss notification" { "×" }
         }
     }
 }
@@ -224,6 +283,9 @@ pub fn page(title: &str, viewer: &Viewer, palette: Palette, body: &Markup) -> Ma
                 header { (header(viewer)) }
                 @if show_palette {
                     (render_palette())
+                    // A sibling of #palette, never a child: a toast must stay
+                    // visible even while the palette itself is hidden.
+                    (toasts())
                 }
                 main { (body) }
                 (debug_overlay())
@@ -270,7 +332,7 @@ pub fn header(viewer: &Viewer) -> Markup {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{debug_payload, header, page, Palette, Viewer};
+    use super::{debug_payload, header, page, toast, toasts, Palette, Viewer};
     use maud::html;
     use noal_core::ask::outcome::{Debug, Outcome, Stage, Verdict};
 
@@ -409,6 +471,60 @@ mod tests {
     }
 
     #[test]
+    fn toasts_is_an_empty_polite_live_region() {
+        let rendered = toasts().into_string();
+        assert!(rendered.contains(r#"id="toasts""#));
+        assert!(rendered.contains(r#"aria-live="polite""#));
+        // Empty: a page starts with no failure to announce.
+        assert!(rendered.contains(r#"<div id="toasts" aria-live="polite"></div>"#));
+    }
+
+    #[test]
+    fn a_toast_carries_its_message_and_a_labelled_dismiss_button() {
+        let rendered = toast("noal could not run the query it wrote.").into_string();
+        assert!(rendered.contains("noal could not run the query it wrote."));
+        let tag = opening_tag_containing(&rendered, "toast-dismiss");
+        assert!(tag.starts_with("<button"));
+        assert!(tag.contains(r#"type="button""#));
+        assert!(tag.contains("aria-label="));
+    }
+
+    #[test]
+    fn a_toast_s_dismiss_button_is_not_the_whole_toast() {
+        // The dismiss control must sit inside the toast, not be the toast
+        // itself — otherwise selecting the message text would dismiss it,
+        // and a screen reader would read the whole message as a button.
+        let rendered = toast("noal could not run the query it wrote.").into_string();
+        let toast_tag = opening_tag_containing(&rendered, r#"class="toast""#);
+        assert_eq!(toast_tag, r#"<div class="toast">"#);
+    }
+
+    #[test]
+    fn an_open_palette_carries_the_toast_region_as_a_sibling() {
+        let rendered = page(
+            "Home",
+            &Viewer::SignedIn {
+                email: "someone@example.com".to_owned(),
+            },
+            Palette::Open,
+            &html! {},
+        )
+        .into_string();
+        let palette_at = rendered.find(r#"id="palette""#).unwrap();
+        let toasts_at = rendered.find(r#"id="toasts""#).unwrap();
+        let palette_close = rendered[palette_at..].find("</div>").unwrap() + palette_at;
+        // #toasts appears only once #palette's own closing tag has passed,
+        // proving it is a sibling rather than nested inside it.
+        assert!(toasts_at > palette_close);
+    }
+
+    #[test]
+    fn a_closed_palette_carries_no_toast_region_either() {
+        let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
+        assert!(!rendered.contains(r#"id="toasts""#));
+    }
+
+    #[test]
     fn an_anonymous_viewer_is_offered_sign_in() {
         let rendered = header(&Viewer::Anonymous).into_string();
         assert!(rendered.contains("/auth/login"));
@@ -468,7 +584,35 @@ mod tests {
     }
 
     #[test]
+    fn the_overlay_script_dismisses_the_newest_toast_before_closing_the_palette() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("function dismissToast(el)"));
+        assert!(script.contains("toasts.lastElementChild"));
+        // The toast branch must be checked, and win, before the palette is
+        // ever asked to close.
+        let escape_at = script.find("event.key === 'Escape'").unwrap();
+        let newest_at = script.find("var newestToast").unwrap();
+        let toggle_at = script[newest_at..].find("togglePalette();").unwrap() + newest_at;
+        assert!(escape_at < newest_at);
+        assert!(newest_at < toggle_at);
+    }
+
+    #[test]
+    fn the_overlay_script_delegates_the_toast_dismiss_click() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("toasts.addEventListener('click'"));
+        assert!(script.contains("closest('.toast-dismiss')"));
+    }
+
+    #[test]
     fn the_style_still_hides_a_hidden_palette() {
         assert!(super::STYLE.contains("#palette[hidden] { display: none; }"));
+    }
+
+    #[test]
+    fn the_toast_region_has_an_explicit_z_index_above_the_debug_chrome() {
+        // #debug-toggle is the highest z-index otherwise in play, at 10.
+        assert!(super::STYLE.contains("#toasts { position: fixed;"));
+        assert!(super::STYLE.contains("z-index: 11;"));
     }
 }

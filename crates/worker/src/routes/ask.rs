@@ -9,9 +9,10 @@
 use std::future::Future;
 
 use axum::extract::State;
-use axum::response::Html;
+use axum::http::{HeaderName, HeaderValue};
+use axum::response::{Html, IntoResponse, Response};
 use axum::Form;
-use noal_core::ask::outcome::{Outcome, Stage, Timing};
+use noal_core::ask::outcome::{Outcome, Stage, Timing, Verdict};
 use noal_core::ask::pipeline::{Event, Pipeline, Step};
 use noal_core::ask::plan::Plan;
 use noal_core::ask::prompt::{strip_fences, PLAN_PREAMBLE, RENDER_PREAMBLE};
@@ -41,14 +42,61 @@ pub async fn ask(
     State(state): State<AppState>,
     _signed_in: SignedIn,
     Form(form): Form<AskForm>,
-) -> Result<Html<String>, Failure> {
+) -> Result<Response, Failure> {
     let outcome = run(&state, form.request.trim().to_owned()).await?;
-    let mut body = noal_view::ask::answer(&outcome).into_string();
-    // The debug payload rides beside the answer as a top-level, out-of-band
-    // element: htmx only processes `hx-swap-oob` at the top of the response,
-    // not nested inside the swapped fragment.
-    body.push_str(&noal_view::layout::debug_payload(&outcome).into_string());
-    Ok(Html(body))
+    Ok(render_outcome(&outcome))
+}
+
+/// Render one [`Outcome`]'s body: the fragment for its verdict, plus its
+/// debug payload riding along out of band.
+///
+/// Kept apart from header choice and from the handler so a native test can
+/// check what each verdict renders by comparing strings, same as any other
+/// view call.
+fn render_body(outcome: &Outcome) -> String {
+    let mut body = match &outcome.verdict {
+        Verdict::Answered { html } => noal_view::ask::answer(&outcome.request, html).into_string(),
+        Verdict::Failed { stage } => {
+            noal_view::layout::toast(noal_view::ask::failure_text(*stage)).into_string()
+        }
+    };
+    // The debug payload rides beside the main fragment as a top-level,
+    // out-of-band element: htmx only processes `hx-swap-oob` at the top of
+    // the response, not nested inside whatever the response retargets to.
+    body.push_str(&noal_view::layout::debug_payload(outcome).into_string());
+    body
+}
+
+/// Render one [`Outcome`] into the response the browser receives.
+///
+/// Kept separate from the handler, and taking no state or request, so the
+/// header choice a refusal makes — retargeting the swap at `#toasts` instead
+/// of `#ask-result` — is something a native test can pin rather than
+/// something only read by eye.
+///
+/// An answered outcome swaps `#ask-result` as always. A refused stage still
+/// answers `200`: that keeps the debug payload travelling the normal swap
+/// path instead of the error path, and it is what leaves the previous answer
+/// on screen, since `HX-Retarget`/`HX-Reswap` steer the swap away from
+/// `#ask-result` entirely, appending the toast to `#toasts` instead.
+fn render_outcome(outcome: &Outcome) -> Response {
+    let body = render_body(outcome);
+    match outcome.verdict {
+        Verdict::Answered { .. } => Html(body).into_response(),
+        Verdict::Failed { .. } => {
+            let mut response = Html(body).into_response();
+            let headers = response.headers_mut();
+            headers.insert(
+                HeaderName::from_static("hx-retarget"),
+                HeaderValue::from_static("#toasts"),
+            );
+            headers.insert(
+                HeaderName::from_static("hx-reswap"),
+                HeaderValue::from_static("beforeend"),
+            );
+            response
+        }
+    }
 }
 
 /// Drive the pipeline to completion.
@@ -216,4 +264,60 @@ async fn execute(
     serde_json::from_str(&text)
         .map_err(Failure::database)
         .map(Ok)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::http::StatusCode;
+    use noal_core::ask::outcome::{Debug, Outcome, Verdict};
+
+    use super::{render_body, render_outcome, Stage};
+
+    fn outcome(verdict: Verdict) -> Outcome {
+        Outcome {
+            request: "open tasks".into(),
+            verdict,
+            debug: Debug::default(),
+        }
+    }
+
+    #[test]
+    fn an_answered_outcome_renders_the_answer_and_its_debug_payload() {
+        let body = render_body(&outcome(Verdict::Answered {
+            html: "<ul><li>a</li></ul>".into(),
+        }));
+        assert!(body.contains("<ul><li>a</li></ul>"));
+        assert!(body.contains("id=\"ask-debug\""));
+        assert!(!body.contains("id=\"toasts\""));
+    }
+
+    #[test]
+    fn a_refused_outcome_renders_a_toast_and_its_debug_payload() {
+        let body = render_body(&outcome(Verdict::Failed {
+            stage: Stage::Query,
+        }));
+        assert!(body.contains("could not run the query"));
+        assert!(body.contains("class=\"toast\""));
+        assert!(body.contains("id=\"ask-debug\""));
+        assert!(!body.contains("id=\"ask-result\""));
+    }
+
+    #[test]
+    fn an_answered_response_sets_no_retarget_headers_and_answers_200() {
+        let response = render_outcome(&outcome(Verdict::Answered {
+            html: String::new(),
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key("hx-retarget"));
+        assert!(!response.headers().contains_key("hx-reswap"));
+    }
+
+    #[test]
+    fn a_refused_response_retargets_the_swap_to_toasts_and_still_answers_200() {
+        let response = render_outcome(&outcome(Verdict::Failed { stage: Stage::Plan }));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("hx-retarget").unwrap(), "#toasts");
+        assert_eq!(response.headers().get("hx-reswap").unwrap(), "beforeend");
+    }
 }
