@@ -2671,9 +2671,9 @@ dependencies = [
 
 [[package]]
 name = "worker-macros"
-version = "0.8.3"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60bcb459a67977fcb79698a3123ae58a928b1b24cc3035eaec033dbdfc139438"
+checksum = "6d908735d273dd7f9c325a842623f4e5a745e0686187ce465b34dc162ad348df"
 dependencies = [
  "async-trait",
  "proc-macro2",
@@ -2681,7 +2681,6 @@ dependencies = [
  "strum",
  "syn 2.0.119",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-macro-support",
  "worker-sys",
 ]
