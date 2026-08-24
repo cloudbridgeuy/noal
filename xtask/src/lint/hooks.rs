@@ -398,6 +398,7 @@ mod lint_pipeline_tests {
             no_check: false,
             no_clippy: false,
             no_test: false,
+            no_doc: false,
             no_file_length: false,
             no_too_many_args: false,
             fix: false,
@@ -478,6 +479,8 @@ mod lint_pipeline_tests {
         assert_eq!(fix_args(CheckId::Check), None);
         assert_eq!(fix_args(CheckId::CheckWasm), None);
         assert_eq!(fix_args(CheckId::Test), None);
+        assert_eq!(fix_args(CheckId::Doc), None);
+        assert_eq!(fix_args(CheckId::DocWasm), None);
         assert_eq!(fix_args(CheckId::FileLength), None);
         assert_eq!(fix_args(CheckId::TooManyArgsAllow), None);
     }
@@ -493,6 +496,7 @@ mod lint_pipeline_tests {
                     check.program,
                     check.args,
                     check.optional,
+                    check.env,
                 )
             })
             .collect::<Vec<_>>();
@@ -505,6 +509,7 @@ mod lint_pipeline_tests {
                     "cargo",
                     &["fmt", "--", "--check"][..],
                     false,
+                    &[][..],
                 ),
                 (
                     CheckId::Check,
@@ -518,6 +523,7 @@ mod lint_pipeline_tests {
                         "--all-targets",
                     ][..],
                     false,
+                    &[][..],
                 ),
                 (
                     CheckId::CheckWasm,
@@ -531,6 +537,7 @@ mod lint_pipeline_tests {
                         "wasm32-unknown-unknown",
                     ][..],
                     false,
+                    &[][..],
                 ),
                 (
                     CheckId::Clippy,
@@ -547,6 +554,7 @@ mod lint_pipeline_tests {
                         "warnings",
                     ][..],
                     false,
+                    &[][..],
                 ),
                 (
                     CheckId::ClippyWasm,
@@ -563,6 +571,7 @@ mod lint_pipeline_tests {
                         "warnings",
                     ][..],
                     false,
+                    &[][..],
                 ),
                 (
                     CheckId::Test,
@@ -576,6 +585,36 @@ mod lint_pipeline_tests {
                         "--all-targets",
                     ][..],
                     false,
+                    &[][..],
+                ),
+                (
+                    CheckId::Doc,
+                    "cargo doc --workspace --exclude noal_worker --no-deps",
+                    "cargo",
+                    &[
+                        "doc",
+                        "--workspace",
+                        "--exclude",
+                        "noal_worker",
+                        "--no-deps"
+                    ][..],
+                    false,
+                    &[("RUSTDOCFLAGS", "-D warnings")][..],
+                ),
+                (
+                    CheckId::DocWasm,
+                    "cargo doc -p noal_worker --target wasm32-unknown-unknown --no-deps",
+                    "cargo",
+                    &[
+                        "doc",
+                        "-p",
+                        "noal_worker",
+                        "--target",
+                        "wasm32-unknown-unknown",
+                        "--no-deps",
+                    ][..],
+                    false,
+                    &[("RUSTDOCFLAGS", "-D warnings")][..],
                 ),
                 (
                     CheckId::FileLength,
@@ -583,6 +622,7 @@ mod lint_pipeline_tests {
                     "__builtin__",
                     &[][..],
                     false,
+                    &[][..],
                 ),
                 (
                     CheckId::TooManyArgsAllow,
@@ -590,6 +630,7 @@ mod lint_pipeline_tests {
                     "__builtin__",
                     &[][..],
                     false,
+                    &[][..],
                 ),
             ]
         );
@@ -601,7 +642,7 @@ mod lint_pipeline_tests {
         // `--no-clippy` each govern a pair: the host check and its Wasm twin.
         // Every other flag still governs exactly one check.
         type SkipCase = (&'static [CheckId], fn(&mut LintArgs));
-        let cases: [SkipCase; 6] = [
+        let cases: [SkipCase; 7] = [
             (&[CheckId::Fmt], |args: &mut LintArgs| args.no_fmt = true),
             (
                 &[CheckId::Check, CheckId::CheckWasm],
@@ -616,6 +657,9 @@ mod lint_pipeline_tests {
                 },
             ),
             (&[CheckId::Test], |args: &mut LintArgs| args.no_test = true),
+            (&[CheckId::Doc, CheckId::DocWasm], |args: &mut LintArgs| {
+                args.no_doc = true;
+            }),
             (&[CheckId::FileLength], |args: &mut LintArgs| {
                 args.no_file_length = true;
             }),
@@ -646,6 +690,7 @@ mod lint_pipeline_tests {
             no_check: false,
             no_clippy: false,
             no_test: false,
+            no_doc: false,
             no_file_length: false,
             no_too_many_args: false,
             fix: true,

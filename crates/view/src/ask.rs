@@ -7,11 +7,20 @@
 use maud::{html, Markup, PreEscaped};
 use noal_core::ask::outcome::{Outcome, Stage, Verdict};
 
-/// The form that starts an ask. Submitting it replaces it with the answer.
+/// The form that starts an ask. Submitting it replaces `#ask-result`, wherever
+/// on the page that lives, leaving the form itself in place.
+///
+/// `hx-sync="this:drop"` drops a second submit made while the first is still
+/// in flight, rather than queuing or replacing it — this is what stops a
+/// second Enter press from firing another request. `hx-disabled-elt="find
+/// button"` disables the submit button for the same span, as the visible
+/// sign that an ask is already running; the input is left out on purpose so
+/// the user can keep editing their request while it runs.
 #[must_use]
 pub fn form() -> Markup {
     html! {
-        form #ask-form hx-post="/ask" hx-target="this" hx-swap="outerHTML" hx-indicator="#ask-busy" {
+        form #ask-form hx-post="/ask" hx-target="#ask-result" hx-swap="outerHTML" hx-indicator="#ask-busy"
+            hx-sync="this:drop" hx-disabled-elt="find button" {
             label for="ask-input" { "What do you want to see?" }
             input #ask-input name="request" type="text" required autofocus
                 placeholder="open tasks under the Render MVP epic, with comments";
@@ -21,10 +30,25 @@ pub fn form() -> Markup {
     }
 }
 
+/// `#ask-result`'s resting state, before any ask has been made.
+///
+/// Shares its shape with [`answer`]'s rendered section — a `section
+/// #ask-result` wrapping a `div.ask-answer` — so the first swap changes only
+/// the content, never the element the form targets.
+#[must_use]
+pub fn greeting() -> Markup {
+    html! {
+        section #ask-result {
+            div .ask-answer { "noal" }
+        }
+    }
+}
+
 /// Whether a rendered answer was saved as a window.
 ///
 /// The three cases are everything that can happen to an answered ask; a
-/// failed ask has no window to talk about and never receives this value.
+/// failed ask has no window to talk about and never reaches this value —
+/// a refusal is a toast carried by the layout, not an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Saved {
     /// The window row was written. The answer carries its id out of band.
@@ -54,36 +78,38 @@ pub fn outcome_view(outcome: &Outcome) -> Markup {
     }
 }
 
-/// The answer fragment: the request, the result or a failure, and the debug
-/// payload a later overlay reads.
+/// The answer fragment: the request that produced it, the filled HTML, and —
+/// when the window row could not be written — one honest line saying so.
 ///
-/// `saved` only matters for an answered verdict — a failed ask saved nothing
-/// by definition, so the value is ignored there. The failed-save toast lives
-/// here rather than in the palette because the palette's own toast region
-/// does not exist yet.
+/// Takes the request and the filled HTML directly rather than an
+/// [`Outcome`], so a refused stage — which has no HTML to show — cannot be
+/// passed in here at all. A refusal is a toast, not an answer; the caller
+/// decides which to render by matching the verdict before it ever reaches
+/// this function.
+///
+/// The debug payload deliberately does not ride inside the fragment: it is
+/// page chrome (`#ask-debug`), replaced out of band by the caller with
+/// [`crate::layout::debug_payload`], so it stays current wherever the answer
+/// lands.
 #[must_use]
-pub fn answer(outcome: &Outcome, saved: Saved) -> Markup {
+pub fn answer(request: &str, html: &str, saved: Saved) -> Markup {
     html! {
         section #ask-result {
-            h2 { (outcome.request) }
-            (outcome_view(outcome))
-            @match &outcome.verdict {
-                Verdict::Answered { .. } => {
-                    @if saved == Saved::No {
-                        p #ask-toast role="status" { "The window was not saved." }
-                    }
-                }
-                Verdict::Failed { .. } => {
-                    (form())
-                }
+            h2 { (request) }
+            div .ask-answer { (PreEscaped(html)) }
+            @if saved == Saved::No {
+                p #ask-toast role="status" { "The window was not saved." }
             }
-            script #ask-debug type="application/json" { (PreEscaped(outcome.debug_json())) }
         }
     }
 }
 
 /// What to tell the user when a stage gave up.
-const fn failure_text(stage: Stage) -> &'static str {
+///
+/// Public because the wording for a refused stage is ask knowledge; the
+/// generic toast chrome that carries it lives in `layout`.
+#[must_use]
+pub const fn failure_text(stage: Stage) -> &'static str {
     match stage {
         Stage::Plan => "noal could not work out which data to fetch.",
         Stage::Query => "noal could not run the query it wrote.",
@@ -94,7 +120,7 @@ const fn failure_text(stage: Stage) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, form, outcome_view, Saved};
+    use super::{answer, failure_text, form, greeting, outcome_view, Saved};
     use noal_core::ask::outcome::{Debug, Origin, Outcome, Stage, Verdict};
 
     fn outcome(verdict: Verdict) -> Outcome {
@@ -107,74 +133,89 @@ mod tests {
     }
 
     #[test]
-    fn the_form_posts_to_ask_and_swaps_itself() {
+    fn the_form_posts_to_ask_and_swaps_the_result_target() {
         let html = form().into_string();
         assert!(html.contains("hx-post=\"/ask\""));
+        assert!(html.contains("hx-target=\"#ask-result\""));
         assert!(html.contains("hx-swap=\"outerHTML\""));
         assert!(html.contains("name=\"request\""));
     }
 
     #[test]
-    fn an_answer_places_the_filled_html_verbatim_and_carries_debug_json() {
-        let html = answer(
-            &outcome(Verdict::Answered {
-                html: "<ul><li>a</li></ul>".into(),
-            }),
-            Saved::Yes,
-        )
-        .into_string();
+    fn the_form_drops_a_second_submit_and_disables_only_the_button() {
+        let html = form().into_string();
+        assert!(html.contains("hx-sync=\"this:drop\""));
+        assert!(html.contains("hx-disabled-elt=\"find button\""));
+
+        // The input must stay out of hx-disabled-elt's reach so the user can
+        // keep editing their request while the first ask is in flight.
+        match html.find("<input").and_then(|start| {
+            html[start..]
+                .find('>')
+                .map(|end| &html[start..=start + end])
+        }) {
+            Some(input_tag) => assert!(!input_tag.contains("disabled")),
+            None => panic!("form renders an input"),
+        }
+    }
+
+    #[test]
+    fn the_greeting_fills_ask_result_with_the_shape_answer_will_reuse() {
+        let html = greeting().into_string();
+        assert!(html.contains("id=\"ask-result\""));
+        assert!(html.contains("class=\"ask-answer\""));
+        assert!(html.contains("noal"));
+    }
+
+    #[test]
+    fn an_answer_places_the_filled_html_verbatim_and_carries_no_debug_element() {
+        let html = answer("open tasks", "<ul><li>a</li></ul>", Saved::Yes).into_string();
         assert!(html.contains("<ul><li>a</li></ul>"));
-        assert!(html.contains("id=\"ask-debug\""));
-        assert!(html.contains("\"request\":\"open tasks\""));
-        assert!(!html.contains("hx-post"));
+        // The debug payload is chrome, swapped out of band by the caller;
+        // embedding it here would duplicate the id it replaces.
+        assert!(!html.contains("id=\"ask-debug\""));
+        assert!(!html.contains("hx-post"), "no retry form on an answer");
     }
 
     #[test]
     fn a_saved_answer_carries_no_toast() {
-        let html = answer(
-            &outcome(Verdict::Answered {
-                html: String::new(),
-            }),
-            Saved::Yes,
-        )
-        .into_string();
+        let html = answer("open tasks", "", Saved::Yes).into_string();
         assert!(!html.contains("not saved"));
     }
 
     #[test]
     fn an_unsaved_answer_says_so_once() {
-        let html = answer(
-            &outcome(Verdict::Answered {
-                html: String::new(),
-            }),
-            Saved::No,
-        )
-        .into_string();
+        let html = answer("open tasks", "", Saved::No).into_string();
         assert!(html.contains("The window was not saved."));
-    }
-
-    #[test]
-    fn a_failed_ask_never_mentions_saving() {
-        let html = answer(
-            &outcome(Verdict::Failed {
-                stage: Stage::Query,
-            }),
-            Saved::No,
-        )
-        .into_string();
-        assert!(html.contains("could not run the query"));
-        assert!(html.contains("hx-post=\"/ask\""));
-        assert!(!html.contains("not saved"));
+        assert_eq!(html.matches("The window was not saved.").count(), 1);
     }
 
     #[test]
     fn the_request_is_escaped() {
-        let mut o = outcome(Verdict::Answered {
-            html: String::new(),
-        });
-        o.request = "<img src=x>".into();
-        let html = answer(&o, Saved::Yes).into_string();
+        let html = answer("<img src=x>", "", Saved::Yes).into_string();
         assert!(html.contains("<h2>&lt;img src=x&gt;</h2>"));
+    }
+
+    #[test]
+    fn every_stage_has_its_own_failure_wording() {
+        // Distinct wording per stage, so a refusal names what actually gave
+        // up rather than a generic "something went wrong".
+        let plan = failure_text(Stage::Plan);
+        let query = failure_text(Stage::Query);
+        let render = failure_text(Stage::Render);
+        let fill = failure_text(Stage::Fill);
+
+        assert!(plan.contains("data to fetch"));
+        assert!(query.contains("run the query"));
+        assert!(render.contains("design a view"));
+        assert!(fill.contains("fill its view"));
+
+        let all = [plan, query, render, fill];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
     }
 
     #[test]

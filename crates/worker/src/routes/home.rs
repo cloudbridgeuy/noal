@@ -24,6 +24,9 @@ pub async fn show(State(state): State<AppState>, visitor: Visitor) -> Response {
         viewer: visitor.viewer(),
         windows,
         current: Current::Home,
+        // The home page starts with no answer; an ask fills the Debug tab
+        // out of band.
+        debug_json: None,
     };
     respond::html(StatusCode::OK, noal_view::pages::home(&chrome))
 }

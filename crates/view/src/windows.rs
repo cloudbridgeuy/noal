@@ -18,7 +18,7 @@ pub use noal_core::window::{Entry, Node};
 /// wherever windows are created.
 const LABEL_LIMIT: usize = 60;
 
-/// Cut a request down to [`LABEL_LIMIT`] characters on a word boundary.
+/// Cut a request down to `LABEL_LIMIT` characters on a word boundary.
 ///
 /// The cut is marked with an ellipsis. When the request has no space to cut at,
 /// it falls back to a hard cut at the limit rather than overflowing the drawer.

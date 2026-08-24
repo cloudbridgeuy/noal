@@ -49,6 +49,9 @@ pub async fn show(
         },
         windows: crate::chrome::build(&state, &signed_in.0.user_id).await,
         current: Current::Window(window.id),
+        // The page arrives already carrying its answer, so the palette's
+        // Debug tab opens showing what produced it.
+        debug_json: Some(outcome.debug_json()),
     };
     Ok(respond::html(
         StatusCode::OK,

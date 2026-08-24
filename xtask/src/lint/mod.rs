@@ -52,6 +52,8 @@ enum CheckId {
     Clippy,
     ClippyWasm,
     Test,
+    Doc,
+    DocWasm,
     FileLength,
     TooManyArgsAllow,
 }
@@ -66,6 +68,10 @@ struct Check {
     program: &'static str,
     args: &'static [&'static str],
     optional: bool,
+    /// Environment variables the child process needs. Empty for every check
+    /// that needs none. `cargo doc` has no flag for lint strictness, so the
+    /// doc checks carry `RUSTDOCFLAGS` here instead.
+    env: &'static [(&'static str, &'static str)],
 }
 
 /// What a check decided.
@@ -104,6 +110,10 @@ pub struct LintArgs {
     #[arg(long)]
     pub no_test: bool,
 
+    /// Skip the doc build
+    #[arg(long)]
+    pub no_doc: bool,
+
     /// Skip the file-length check
     #[arg(long)]
     pub no_file_length: bool,
@@ -141,6 +151,7 @@ const CHECKS: &[Check] = &[
         program: "cargo",
         args: &["fmt", "--", "--check"],
         optional: false,
+        env: &[],
     },
     Check {
         id: CheckId::Check,
@@ -154,6 +165,7 @@ const CHECKS: &[Check] = &[
             "--all-targets",
         ],
         optional: false,
+        env: &[],
     },
     Check {
         id: CheckId::CheckWasm,
@@ -167,6 +179,7 @@ const CHECKS: &[Check] = &[
             "wasm32-unknown-unknown",
         ],
         optional: false,
+        env: &[],
     },
     Check {
         id: CheckId::Clippy,
@@ -183,6 +196,7 @@ const CHECKS: &[Check] = &[
             "warnings",
         ],
         optional: false,
+        env: &[],
     },
     Check {
         id: CheckId::ClippyWasm,
@@ -199,6 +213,7 @@ const CHECKS: &[Check] = &[
             "warnings",
         ],
         optional: false,
+        env: &[],
     },
     Check {
         id: CheckId::Test,
@@ -212,6 +227,36 @@ const CHECKS: &[Check] = &[
             "--all-targets",
         ],
         optional: false,
+        env: &[],
+    },
+    Check {
+        id: CheckId::Doc,
+        name: "cargo doc --workspace --exclude noal_worker --no-deps",
+        program: "cargo",
+        args: &[
+            "doc",
+            "--workspace",
+            "--exclude",
+            "noal_worker",
+            "--no-deps",
+        ],
+        optional: false,
+        env: &[("RUSTDOCFLAGS", "-D warnings")],
+    },
+    Check {
+        id: CheckId::DocWasm,
+        name: "cargo doc -p noal_worker --target wasm32-unknown-unknown --no-deps",
+        program: "cargo",
+        args: &[
+            "doc",
+            "-p",
+            "noal_worker",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--no-deps",
+        ],
+        optional: false,
+        env: &[("RUSTDOCFLAGS", "-D warnings")],
     },
     Check {
         id: CheckId::FileLength,
@@ -219,6 +264,7 @@ const CHECKS: &[Check] = &[
         program: "__builtin__",
         args: &[],
         optional: false,
+        env: &[],
     },
     Check {
         id: CheckId::TooManyArgsAllow,
@@ -226,6 +272,7 @@ const CHECKS: &[Check] = &[
         program: "__builtin__",
         args: &[],
         optional: false,
+        env: &[],
     },
 ];
 
@@ -236,6 +283,7 @@ fn should_skip(id: CheckId, args: &LintArgs) -> bool {
         CheckId::Check | CheckId::CheckWasm => args.no_check,
         CheckId::Clippy | CheckId::ClippyWasm => args.no_clippy,
         CheckId::Test => args.no_test,
+        CheckId::Doc | CheckId::DocWasm => args.no_doc,
         CheckId::FileLength => args.no_file_length,
         CheckId::TooManyArgsAllow => args.no_too_many_args,
     }
@@ -246,10 +294,12 @@ fn should_skip(id: CheckId, args: &LintArgs) -> bool {
 /// - `fmt` drops `--check`, so the formatting is written.
 /// - `clippy` gains `--fix --allow-dirty`, so the machine-applicable lints are
 ///   written.
+/// - A doc build repairs nothing, so both doc checks report only.
 /// - Every other check reports only, and returns `None`.
 fn fix_args(id: CheckId) -> Option<Vec<&'static str>> {
     match id {
         CheckId::Fmt => Some(vec!["fmt"]),
+        CheckId::Doc | CheckId::DocWasm => None,
         CheckId::Clippy => Some(vec![
             "clippy",
             "--workspace",
@@ -750,7 +800,12 @@ pub fn run(args: &LintArgs) -> Result<()> {
 fn run_check(check: &Check, name: String, override_args: Option<&[&str]>) -> Result<CheckResult> {
     let args: &[&str] = override_args.unwrap_or(check.args);
 
-    let output = Command::new(check.program).args(args).output();
+    // `cargo doc` takes no flag for lint strictness, so `RUSTDOCFLAGS` carries
+    // it through the environment instead.
+    let output = Command::new(check.program)
+        .args(args)
+        .envs(check.env.iter().copied())
+        .output();
 
     let (success, text) = match output {
         Ok(output) => {

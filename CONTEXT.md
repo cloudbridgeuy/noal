@@ -116,7 +116,6 @@ have, which is what stops an old deploy from migrating a newer database.
 The split is enforced by the target, not by discipline: `noal_core` cannot call
 `worker::` because `worker` is not one of its dependencies, and it never will
 be. That makes the boundary structural.
-
 ---
 
 ## A window URL answers with a full document, not a fragment
@@ -139,3 +138,30 @@ document always arrives filled and current (`Cache-Control: no-store`,
 `hx-history="false"`), never from a cache or a snapshot. Reopening calls no
 model — the stored plan and template are used as-is, and if Postgres refuses
 the query the ask ends rather than retrying with the model's help.
+
+---
+
+## The palette and the toast region are page chrome
+
+**Chosen over** wiring the ask form itself to notice a failed request, over
+folding a failure message into `#palette`'s own markup, and over giving a
+refused pipeline stage its own status code.
+
+`layout::page()` renders `#toasts` and a hidden `#toast-offline` template
+beside `#palette`, and `OVERLAY_SCRIPT` listens for `htmx:responseError` and
+`htmx:sendError` on `document.body` rather than on `#ask-form`. One listener
+answers every htmx request a page makes, not only `/ask`'s. A `401` sends the
+browser to `/auth/login?next=`; anything else appends the failed response's own
+toast body, or clones the offline template when there is no body to append.
+
+A refused pipeline stage still answers `200`. htmx only runs the out-of-band
+swap that keeps the debug panel current on a response it treats as successful,
+so moving a refusal onto its own status code would cost every refused ask its
+debug payload. Everything that is not a `200` is handled in the browser
+instead, by the listener above.
+
+A form that read its own errors was rejected too: every page with an ask form
+would re-implement the same handling, rather than one page-chrome region
+answering for the whole document. The cost is the one already paid for the
+palette itself: an anonymous viewer gets no toast region, because `#toasts`
+exists only where `#palette` does.

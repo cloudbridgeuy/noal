@@ -6,8 +6,12 @@
 //! concurrently with `try_join` — render is the slow one, and there is no
 //! reason to wait for it before asking Postgres.
 //!
-//! An answered ask is then saved as a window: one parameterized insert, and
-//! on success the response carries a fresh tree out of band plus the window's
+//! Every answer this handler produces carries its debug payload out of band,
+//! so the palette's Debug tab stays current whichever verdict was reached. A
+//! refused stage answers `200` with its toast retargeted into `#toasts`,
+//! leaving the previous answer — and the typed request — alone on screen. An
+//! answered ask is then saved as a window: one parameterized insert, and on
+//! success the response carries a fresh tree out of band plus the window's
 //! URL for htmx to push. A failed save manufactures no URL — pushing `/w/:id`
 //! for a missing row would hand back a button and a reload that both 404 —
 //! so the answer goes back alone with one honest line instead.
@@ -18,7 +22,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Form;
-use maud::html;
+use maud::{html, Markup};
 use noal_core::ask::outcome::{Outcome, Stage, Timing, Verdict};
 use noal_core::ask::pipeline::{Event, Pipeline, Step};
 use noal_core::ask::plan::Plan;
@@ -31,7 +35,7 @@ use serde::Deserialize;
 use tokio_postgres::SimpleQueryMessage;
 
 use crate::entropy;
-use crate::extract::SignedIn;
+use crate::extract::{Fragment, SignedIn};
 use crate::failure::Failure;
 use crate::llm;
 use crate::respond;
@@ -46,53 +50,122 @@ pub struct AskForm {
 
 /// Run the pipeline and render whatever it produced.
 ///
-/// # Errors
+/// Names [`Fragment<SignedIn>`] rather than [`SignedIn`] directly, so an
+/// absent or stale session still refuses the request — the same guarantee
+/// [`crate::extract`] documents — but the refusal renders as a toast rather
+/// than a whole document landing inside `#ask-result`.
 ///
-/// Returns a [`Failure`] only for transport-level trouble in the pipeline
-/// itself: the model or the database unreachable. A stage the pipeline
-/// refuses is not a failure; it is an [`Outcome`] the view explains. Trouble
-/// saving the window never reaches this either — it degrades to an answer
-/// without a URL, because the answer is worth more than its address.
+/// A transport-level `Failure` — the model or the database unreachable — is
+/// handled the same way, through [`Failure::toast`], rather than returned:
+/// every non-`200` this handler can produce must carry a toast body, and a
+/// plain `Response` return type is what makes that total rather than a
+/// convention a future caller could forget. A stage the pipeline refuses is
+/// not a failure at all; it is an [`Outcome`] the view explains, still
+/// answering `200`.
 pub async fn ask(
     State(state): State<AppState>,
-    signed_in: SignedIn,
+    Fragment(signed_in): Fragment<SignedIn>,
     Form(form): Form<AskForm>,
-) -> Result<Response, Failure> {
-    let outcome = run(&state, form.request.trim().to_owned()).await?;
-    match &outcome.verdict {
-        // A failed ask saved nothing; the `Saved` value is ignored there.
-        Verdict::Failed { .. } => Ok(respond::html(
-            StatusCode::OK,
-            noal_view::ask::answer(&outcome, Saved::No),
-        )),
-        Verdict::Answered { .. } => Ok(answered_response(&state, &signed_in.0, &outcome).await),
+) -> Response {
+    match run(&state, form.request.trim().to_owned()).await {
+        Ok(outcome) => match &outcome.verdict {
+            Verdict::Answered { html } => {
+                answered_response(&state, &signed_in.0, &outcome, html).await
+            }
+            Verdict::Failed { stage } => refused_response(&outcome, *stage),
+        },
+        Err(failure) => failure.toast(),
+    }
+}
+
+/// Everything an answered ask swaps in: the answer itself, the debug payload
+/// out of band, and — when the window row was written — the refreshed tree
+/// out of band too.
+///
+/// Kept pure, apart from header choice and from saving, so a native test can
+/// check what each save outcome renders by comparing strings, same as any
+/// other view call.
+fn answered_body(outcome: &Outcome, filled: &str, saved: Saved, tree: Option<Markup>) -> Markup {
+    html! {
+        (noal_view::ask::answer(&outcome.request, filled, saved))
+        @if let Some(tree) = tree {
+            (tree)
+        }
+        (noal_view::layout::debug_payload(outcome))
     }
 }
 
 /// The response to an answered ask: save it, then decorate the answer.
 ///
-/// Saved: the fragment plus the refreshed tree out of band, with htmx pushing
-/// the window's URL. Unsaved: the fragment alone, with a toast saying so —
-/// same answer, no address, no tree.
+/// Saved: `200`, the refreshed tree out of band, `HX-Push-Url` pointing at
+/// the window, and `HX-Trigger: noal:answered` telling the palette to close
+/// and clear. Unsaved: the same answer minus the address and the tree, with
+/// one honest line about the save — the trigger still rides, because the
+/// pipeline did produce an answer; only the save failed.
 async fn answered_response(
     state: &AppState,
     viewer: &SessionClaims,
     outcome: &Outcome,
+    filled: &str,
 ) -> Response {
     match save_window(state, viewer, outcome).await {
         Ok(id) => {
             let windows = crate::chrome::build(state, &viewer.user_id).await;
-            let body = html! {
-                (noal_view::ask::answer(outcome, Saved::Yes))
-                (noal_view::windows::oob_tree(&windows, &Current::Window(id)))
-            };
-            respond::with(StatusCode::OK, body, &[("HX-Push-Url", format!("/w/{id}"))])
+            let body = answered_body(
+                outcome,
+                filled,
+                Saved::Yes,
+                Some(noal_view::windows::oob_tree(&windows, &Current::Window(id))),
+            );
+            respond::with(
+                StatusCode::OK,
+                body,
+                &[
+                    ("HX-Push-Url", format!("/w/{id}")),
+                    ("HX-Trigger", "noal:answered".to_owned()),
+                ],
+            )
         }
         Err(detail) => {
             worker::console_error!("window not saved: {detail}");
-            respond::html(StatusCode::OK, noal_view::ask::answer(outcome, Saved::No))
+            let body = answered_body(outcome, filled, Saved::No, None);
+            respond::with(
+                StatusCode::OK,
+                body,
+                &[("HX-Trigger", "noal:answered".to_owned())],
+            )
         }
     }
+}
+
+/// The body of a refused stage: the refusal as a toast, plus the debug
+/// payload riding along out of band — a refused stage still has attempts and
+/// timings worth showing.
+fn refused_body(outcome: &Outcome, stage: Stage) -> Markup {
+    html! {
+        (noal_view::layout::toast(noal_view::ask::failure_text(stage)))
+        (noal_view::layout::debug_payload(outcome))
+    }
+}
+
+/// The response to a refused pipeline stage.
+///
+/// It still answers `200`: that keeps the debug payload travelling the normal
+/// swap path instead of the error path, and it is what leaves the previous
+/// answer on screen, since `HX-Retarget`/`HX-Reswap` steer the swap away from
+/// `#ask-result` entirely, appending the toast to `#toasts` instead.
+///
+/// No `HX-Trigger` rides along: its absence is the whole mechanism that keeps
+/// the palette open with the typed text intact.
+fn refused_response(outcome: &Outcome, stage: Stage) -> Response {
+    respond::with(
+        StatusCode::OK,
+        refused_body(outcome, stage),
+        &[
+            ("HX-Retarget", "#toasts".to_owned()),
+            ("HX-Reswap", "beforeend".to_owned()),
+        ],
+    )
 }
 
 /// Write one answered ask away as a window row.
@@ -301,4 +374,110 @@ async fn execute(
     serde_json::from_str(&text)
         .map_err(Failure::database)
         .map(Ok)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{answered_body, refused_body, refused_response, Saved};
+    use axum::http::StatusCode;
+    use noal_core::ask::outcome::{Debug, Origin, Outcome, Stage, Verdict};
+    use noal_view::windows::{Current, Windows};
+
+    fn outcome(verdict: Verdict) -> Outcome {
+        Outcome {
+            request: "open tasks".into(),
+            verdict,
+            origin: Origin::Asked,
+            debug: Debug::default(),
+        }
+    }
+
+    #[test]
+    fn a_refused_outcome_renders_a_toast_and_its_debug_payload() {
+        let body = refused_body(
+            &outcome(Verdict::Failed {
+                stage: Stage::Query,
+            }),
+            Stage::Query,
+        )
+        .into_string();
+        assert!(body.contains("could not run the query"));
+        assert!(body.contains("class=\"toast\""));
+        assert!(body.contains("id=\"ask-debug\""));
+        assert!(!body.contains("id=\"ask-result\""));
+    }
+
+    #[test]
+    fn a_refused_response_retargets_the_swap_to_toasts_and_still_answers_200() {
+        let response = refused_response(
+            &outcome(Verdict::Failed { stage: Stage::Plan }),
+            Stage::Plan,
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("hx-retarget").unwrap(), "#toasts");
+        assert_eq!(response.headers().get("hx-reswap").unwrap(), "beforeend");
+    }
+
+    #[test]
+    fn a_refused_response_sends_no_answered_trigger() {
+        let response = refused_response(
+            &outcome(Verdict::Failed { stage: Stage::Plan }),
+            Stage::Plan,
+        );
+        assert!(!response.headers().contains_key("hx-trigger"));
+    }
+
+    #[test]
+    fn a_saved_answer_carries_the_tree_and_no_save_warning() {
+        let outcome = outcome(Verdict::Answered {
+            html: "<ul><li>a</li></ul>".into(),
+        });
+        let body = answered_body(
+            &outcome,
+            "<ul><li>a</li></ul>",
+            Saved::Yes,
+            Some(noal_view::windows::oob_tree(
+                &Windows::Tree(Vec::new()),
+                &Current::Home,
+            )),
+        )
+        .into_string();
+
+        assert!(body.contains("<ul><li>a</li></ul>"));
+        // The fresh tree rides out of band, marked for htmx to swap into the
+        // palette's Windows tab.
+        assert!(body.contains(r#"<nav id="window-tree" hx-swap-oob="outerHTML">"#));
+        assert!(body.contains("id=\"ask-debug\""));
+        assert!(!body.contains("not saved"));
+    }
+
+    #[test]
+    fn an_unsaved_answer_carries_the_honest_line_but_no_tree() {
+        let outcome = outcome(Verdict::Answered {
+            html: "<ul><li>a</li></ul>".into(),
+        });
+        let body = answered_body(&outcome, "<ul><li>a</li></ul>", Saved::No, None).into_string();
+
+        assert!(body.contains("The window was not saved."));
+        // No save, no address: pushing /w/:id would 404 on reload.
+        assert!(!body.contains("hx-swap-oob=\"outerHTML\"><nav"));
+        assert!(!body.contains("id=\"window-tree\""));
+        // The debug payload still travels; the answer happened either way.
+        assert!(body.contains("id=\"ask-debug\""));
+    }
+
+    #[test]
+    fn an_answered_body_swaps_into_ask_result_rather_than_the_palette() {
+        let outcome = outcome(Verdict::Answered {
+            html: String::new(),
+        });
+        let body = answered_body(&outcome, "", Saved::Yes, None).into_string();
+        assert!(body.contains("id=\"ask-result\""));
+        // Closing the palette early cannot disturb a swap landing outside it.
+        assert!(
+            !body.contains("class=\"toast\""),
+            "an answer is not a failure notice"
+        );
+    }
 }
