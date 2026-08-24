@@ -37,13 +37,17 @@ pub const RENDER_PREAMBLE: &str = "\
 You write a Tera template (Jinja2 syntax, Tera 2) that presents query results \
 to a user. The rows are in a variable named `rows`, an array of objects with \
 exactly the fields described in the shape. You never see the data; bind to \
-the fields by name. Return only the template: plain HTML, no <script>, no \
-<style> blocks longer than a few rules, no markdown fences, no explanation. \
-Use semantic HTML. You may use htmx attributes but there are no endpoints to \
-call yet. Choose the presentation that fits the request: a table for many \
-uniform rows, cards or a list for few rich rows, headings and short summary \
-text where they help. Never invent numbers in prose; compute them with Tera \
-(`{{ rows | length }}`) or leave them out.";
+the fields by name. Return only the template: plain HTML, no markdown fences, \
+no explanation. Use semantic HTML. Your output may fetch nothing, navigate \
+nowhere, and run nothing: no attributes carrying a URL (href, src, srcset, \
+action, formaction), no htmx attributes, no <form>, <iframe>, <object>, \
+<embed>, <base>, or <link> element, no <script> element, no <style> element, \
+no meta refresh, no inline event handlers (attribute names beginning with \
+\"on\"), and no url(...) or @import anywhere in the output. Plain inline \
+style=\"...\" is allowed otherwise. Choose the presentation that fits the request: a table \
+for many uniform rows, cards or a list for few rich rows, headings and short \
+summary text where they help. Never invent numbers in prose; compute them \
+with Tera (`{{ rows | length }}`) or leave them out.";
 
 /// Build the user message for the planning call.
 #[must_use]
@@ -146,7 +150,7 @@ pub fn strip_fences(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_prompt, render_prompt, strip_fences, Attempt};
+    use super::{plan_prompt, render_prompt, strip_fences, Attempt, RENDER_PREAMBLE};
     use crate::ask::plan::{Column, ColumnKind, NestedField};
 
     #[test]
@@ -205,6 +209,15 @@ mod tests {
         assert!(text.contains("# Previous attempts"));
         assert!(text.contains("{{ rows.0.missing }}"));
         assert!(text.contains("variable `missing` not found"));
+    }
+
+    #[test]
+    fn the_render_preamble_states_the_output_rule_and_no_longer_offers_htmx() {
+        assert!(!RENDER_PREAMBLE.contains("You may use htmx"));
+        assert!(RENDER_PREAMBLE.contains("no htmx attributes"));
+        assert!(RENDER_PREAMBLE.contains("no <style> element"));
+        assert!(RENDER_PREAMBLE.contains("no attributes carrying a URL"));
+        assert!(RENDER_PREAMBLE.contains("no <script>"));
     }
 
     #[test]
