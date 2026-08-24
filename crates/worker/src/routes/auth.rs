@@ -329,4 +329,20 @@ mod tests {
         let headers = headers_with_cookie(&format!("{RETURN_COOKIE_NAME}=//evil.com"));
         assert_eq!(return_destination(&headers), "/");
     }
+
+    #[test]
+    fn return_destination_reads_a_cookie_whose_value_holds_an_equals_sign() {
+        // `cookie::write_for` writes `next` as the cookie value verbatim, and
+        // the everyday `next` is a path with a query string, so the cookie
+        // value routinely contains `=`. `cookie::read` splits each pair on
+        // the *first* `=` only, so this proves the value round-trips whole
+        // rather than being cut at its own `=`.
+        let set_cookie = cookie::write_for(
+            RETURN_COOKIE_NAME,
+            "/health?x=1",
+            cookie::BRIEF_MAX_AGE_SECONDS,
+        );
+        let headers = headers_with_cookie(&set_cookie);
+        assert_eq!(return_destination(&headers), "/health?x=1");
+    }
 }

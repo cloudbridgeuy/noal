@@ -551,6 +551,32 @@ mod tests {
         assert_eq!(next_param(""), None);
     }
 
+    /// The real `next` value the browser sends is percent-encoded and carries
+    /// a query string: `location.pathname + location.search` run through
+    /// `encodeURIComponent`. Pins that the decoded value keeps the `?` and
+    /// `=` characters rather than stopping at the first escape.
+    #[test]
+    fn next_param_decodes_a_percent_encoded_query_string() {
+        assert_eq!(
+            next_param("next=%2Fhealth%3Fx%3D1"),
+            Some("/health?x=1".to_owned())
+        );
+    }
+
+    /// The browser-side caller always percent-encodes `next`, so a raw `&`
+    /// inside the value never reaches this function in practice. Pinned
+    /// anyway: `next_param` splits the whole query on `&` before it looks at
+    /// `=`, so an unescaped `&` inside the value is read as the start of the
+    /// *next* parameter, not as part of this one. The tail after it (`y=2`)
+    /// is discarded, not appended.
+    #[test]
+    fn next_param_truncates_an_unencoded_ampersand() {
+        assert_eq!(
+            next_param("next=/health?x=1&y=2"),
+            Some("/health?x=1".to_owned())
+        );
+    }
+
     /// `return_path` is the whole defence against an open redirect, so every
     /// case in the security rule gets a row here rather than a handful of
     /// spot checks.
@@ -570,6 +596,17 @@ mod tests {
             ("/a\r\nSet-Cookie:x=y", None),
             ("/a\nb", None),
             ("/a\tb", None),
+            // The everyday shape: the browser builds `next` from
+            // `location.pathname + location.search`, so a query string is
+            // the common case, not an edge case.
+            ("/health?x=1", Some("/health?x=1")),
+            ("/w/7?tab=a&sort=b", Some("/w/7?tab=a&sort=b")),
+            // A fragment never leaves the browser as part of the request
+            // that follows the redirect, so accepting it here is harmless:
+            // it is still rooted at the origin, carries no scheme, and
+            // contains no character the cookie or `Location` header would
+            // choke on.
+            ("/health#top", Some("/health#top")),
         ];
 
         for (raw, expected) in cases {
