@@ -1,13 +1,15 @@
 //! The saved-window tree shown in the palette's Windows tab.
 //!
 //! The tree is data until it renders. The shell gathers [`Entry`] values and
-//! their nesting; the pure [`tree`] function turns them into markup. Nothing
+//! their nesting — both defined in `noal_core::window`, so the shell builds
+//! exactly one kind of tree — and this module turns them into markup. Nothing
 //! here touches a connection, so the whole module is tested by comparing
 //! strings.
 
 use std::borrow::Cow;
 
 use maud::{html, Markup};
+pub use noal_core::window::{Entry, Node};
 
 /// The most characters a window label shows before it is cut.
 ///
@@ -33,37 +35,16 @@ pub fn cut(request: &str) -> Cow<'_, str> {
     Cow::Owned(format!("{kept}…"))
 }
 
-impl Entry {
-    /// What the row shows: the viewer's name when there is one, otherwise the
-    /// cut request.
-    fn label(&self) -> Cow<'_, str> {
-        match &self.name {
-            Some(name) => Cow::Borrowed(name.as_str()),
-            None => cut(&self.request),
-        }
+/// What a tree row shows: the viewer's name when there is one, otherwise the
+/// cut request.
+///
+/// A free function rather than an inherent method because `Entry` lives in
+/// the core; the label is a fact about the drawer, not about windows.
+fn label(entry: &Entry) -> Cow<'_, str> {
+    match &entry.name {
+        Some(name) => Cow::Borrowed(name.as_str()),
+        None => cut(&entry.request),
     }
-}
-
-/// One saved window as the tree shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry {
-    /// The window's id; its row links to `/w/<id>`.
-    pub id: String,
-    /// The request that produced the window. Shown cut, and carried in full in
-    /// the row's tooltip.
-    pub request: String,
-    /// The name the viewer gave the window. When present it replaces the cut
-    /// request as the visible label.
-    pub name: Option<String>,
-}
-
-/// One row of the tree: an entry and the entries nested under it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Node {
-    /// The window this row shows.
-    pub entry: Entry,
-    /// The windows whose parent is this one, in creation order.
-    pub children: Vec<Node>,
 }
 
 /// What the shell knows about the viewer's saved windows.
@@ -82,7 +63,7 @@ pub enum Current {
     /// The start page; its Home row is marked.
     Home,
     /// A saved window, by id; its row is marked when it appears in the tree.
-    Window(String),
+    Window(uuid::Uuid),
 }
 
 /// Render the Windows tab: the Home row, then either the saved tree or the
@@ -90,18 +71,36 @@ pub enum Current {
 #[must_use]
 pub fn tree(windows: &Windows, current: &Current) -> Markup {
     html! {
-        nav #window-tree {
-            ul {
-                (home_row(current))
-                @match windows {
-                    Windows::Tree(nodes) => {
-                        @for node in nodes {
-                            (branch(node, current))
-                        }
+        nav #window-tree { (listing(windows, current)) }
+    }
+}
+
+/// The same tab as [`tree`], marked for htmx to swap in out of band.
+///
+/// An answer fragment carries this beside itself after a saved ask, so the
+/// palette's tree grows without a page load. It must only be sent with an
+/// answer that swapped into a full document — the swap target owns the
+/// element this replaces.
+#[must_use]
+pub fn oob_tree(windows: &Windows, current: &Current) -> Markup {
+    html! {
+        nav #window-tree hx-swap-oob="outerHTML" { (listing(windows, current)) }
+    }
+}
+
+/// Everything inside the `<nav>`: Home plus whatever state the windows are in.
+fn listing(windows: &Windows, current: &Current) -> Markup {
+    html! {
+        ul {
+            (home_row(current))
+            @match windows {
+                Windows::Tree(nodes) => {
+                    @for node in nodes {
+                        (branch(node, current))
                     }
-                    Windows::Unavailable => {
-                        li .windows-unavailable { "Saved windows could not be read." }
-                    }
+                }
+                Windows::Unavailable => {
+                    li .windows-unavailable { "Saved windows could not be read." }
                 }
             }
         }
@@ -124,7 +123,7 @@ fn branch(node: &Node, current: &Current) -> Markup {
     html! {
         li id=[marked.then_some("window-current")] {
             a href=(format!("/w/{}", node.entry.id)) title=(node.entry.request) {
-                (node.entry.label())
+                (label(&node.entry))
             }
             @if !node.children.is_empty() {
                 ul {
@@ -141,9 +140,20 @@ fn branch(node: &Node, current: &Current) -> Markup {
 mod tests {
     use super::{cut, tree, Current, Entry, Node, Windows};
 
-    fn entry(id: &str, request: &str) -> Entry {
+    /// One deterministic id per short name, so assertions can build the exact
+    /// `/w/<id>` text a row links to.
+    fn id(name: &str) -> uuid::Uuid {
+        let mut bytes = [0_u8; 16];
+        for (index, byte) in name.bytes().rev().enumerate().take(16) {
+            bytes[15 - index] = byte;
+        }
+        uuid::Uuid::from_bytes(bytes)
+    }
+
+    fn entry(name: &str, request: &str) -> Entry {
         Entry {
-            id: id.to_owned(),
+            id: id(name),
+            parent_id: None,
             request: request.to_owned(),
             name: None,
         }
@@ -199,11 +209,7 @@ mod tests {
             entry: entry("w-1", request),
             children: Vec::new(),
         };
-        let rendered = tree(
-            &Windows::Tree(vec![node]),
-            &Current::Window("w-1".to_owned()),
-        )
-        .into_string();
+        let rendered = tree(&Windows::Tree(vec![node]), &Current::Window(id("w-1"))).into_string();
         assert!(rendered.contains(&format!("title=\"{request}\"")));
         assert!(rendered.contains("…"));
         assert!(!rendered.contains(&format!(">{request}</a>")));
@@ -244,7 +250,7 @@ mod tests {
             },
         ]);
 
-        let rendered = tree(&windows, &Current::Window("w-2".to_owned())).into_string();
+        let rendered = tree(&windows, &Current::Window(id("w-2"))).into_string();
         assert_eq!(rendered.matches("id=\"window-current\"").count(), 1);
 
         let rendered = tree(&windows, &Current::Home).into_string();
@@ -264,10 +270,10 @@ mod tests {
         let rendered = tree(&windows, &Current::Home).into_string();
 
         let parent = rendered
-            .find("/w/w-1")
+            .find(&format!("/w/{}", id("w-1")))
             .unwrap_or_else(|| panic!("the tree links to the parent window"));
         let child = rendered
-            .find("/w/w-2")
+            .find(&format!("/w/{}", id("w-2")))
             .unwrap_or_else(|| panic!("the tree links to the child window"));
         assert!(child > parent);
         // Nothing closes a row or a list between the two links, so the child
@@ -275,5 +281,27 @@ mod tests {
         let between = &rendered[parent..child];
         assert!(!between.contains("</li>"));
         assert!(!between.contains("</ul>"));
+    }
+
+    #[test]
+    fn the_oob_tree_is_the_same_nav_marked_for_an_out_of_band_swap() {
+        let windows = Windows::Tree(vec![Node {
+            entry: entry("w-1", "first window"),
+            children: Vec::new(),
+        }]);
+
+        let plain = tree(&windows, &Current::Home).into_string();
+        let oob = super::oob_tree(&windows, &Current::Home).into_string();
+
+        assert!(oob.starts_with("<nav id=\"window-tree\" hx-swap-oob=\"outerHTML\">"));
+        assert!(plain.starts_with("<nav id=\"window-tree\">"));
+        // Same content inside, including the honest line when unreadable.
+        assert_eq!(
+            plain.trim_start_matches("<nav id=\"window-tree\">"),
+            oob.trim_start_matches("<nav id=\"window-tree\" hx-swap-oob=\"outerHTML\">")
+        );
+
+        let unavailable = super::oob_tree(&Windows::Unavailable, &Current::Home).into_string();
+        assert!(unavailable.contains("Saved windows could not be read."));
     }
 }

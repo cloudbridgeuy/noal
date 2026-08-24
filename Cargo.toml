@@ -69,8 +69,15 @@ worker-macros = { version = "=0.8.3", features = ["http"] }
 axum = { version = "0.8", default-features = false, features = ["form"] }
 tower-service = "0.3"
 
-# Postgres. The `js` feature swaps entropy and time for the JS host's.
-tokio-postgres = { version = "0.7", default-features = false, features = ["js"] }
+# Postgres. The `js` feature swaps entropy and time for the JS host's. The
+# `with-*` features bind uuid and serde_json values as parameters directly,
+# which the window write path relies on.
+tokio-postgres = { version = "0.7", default-features = false, features = ["js", "with-uuid-1", "with-serde_json-1"] }
+
+# Window ids. `v4` is deliberately absent: it would draw entropy inside the
+# crate, and only `entropy::` in the shell may do that. Ids are built from
+# bytes the shell drew with `getrandom::fill`.
+uuid = { version = "1", default-features = false, features = ["std", "serde"] }
 
 # HTML. Compile-time templates, so no runtime file I/O and no Wasm penalty.
 maud = "0.27"

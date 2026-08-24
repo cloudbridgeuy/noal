@@ -14,6 +14,7 @@ noal_core.workspace = true
 serde_json.workspace = true
 tera.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

@@ -24,6 +24,7 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 #palette ul ul { padding-left: 1rem; }
 #palette a { color: #9cf; }
 .windows-unavailable { color: #f99; }
+#ask-toast { color: #f99; }
 #palette pre { white-space: pre-wrap; background: #222; padding: .5rem; }
 #debug-copy { font: inherit; }
 ";
