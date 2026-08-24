@@ -13,7 +13,10 @@ body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 0 1rem; max-wid
 header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #ddd; }
 #ask-form { display: grid; gap: .5rem; max-width: 40rem; margin: 2rem 0; }
 #ask-form input { font: inherit; padding: .5rem; }
-.htmx-indicator { display: none; } .htmx-request .htmx-indicator { display: inline; }
+.htmx-indicator { display: none; }
+/* htmx marks the element hx-indicator names, not an ancestor, so the
+   same-element selector is the one that fires. */
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline; }
 table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .25rem .5rem; text-align: left; }
 #debug-toggle { position: fixed; right: 1rem; bottom: 1rem; z-index: 10; }
 #debug-panel { position: fixed; inset: 0 0 0 auto; width: min(40rem, 100%); background: #111; color: #eee;
@@ -728,6 +731,14 @@ mod tests {
     #[test]
     fn the_style_still_hides_a_hidden_palette() {
         assert!(super::STYLE.contains("#palette[hidden] { display: none; }"));
+    }
+
+    #[test]
+    fn the_style_shows_an_indicator_that_carries_the_request_class_itself() {
+        // htmx adds `htmx-request` to the element `hx-indicator` names, not
+        // to an ancestor of it, so a rule scoped to a shared element is what
+        // actually shows an indicator named directly, as `#ask-busy` is.
+        assert!(super::STYLE.contains(".htmx-request.htmx-indicator { display: inline; }"));
     }
 
     #[test]
