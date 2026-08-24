@@ -35,3 +35,19 @@ pub fn state_token() -> Result<String, Failure> {
     getrandom::fill(&mut bytes).map_err(|error| Failure::Upstream(error.to_string()))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
+
+/// Draw a fresh window id.
+///
+/// The bytes go through `uuid::Builder` rather than uuid's own `v4`
+/// constructor, so this stays the only place in noal that draws randomness;
+/// the `uuid` dependency is built without the `v4` feature to keep it that
+/// way.
+///
+/// # Errors
+///
+/// Returns [`Failure::Upstream`] when the host refuses entropy.
+pub fn window_id() -> Result<uuid::Uuid, Failure> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| Failure::Upstream(error.to_string()))?;
+    Ok(uuid::Builder::from_random_bytes(bytes).into_uuid())
+}

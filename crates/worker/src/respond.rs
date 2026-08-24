@@ -15,9 +15,23 @@ use maud::Markup;
 /// in the markup is the htmx half.
 #[must_use]
 pub fn html(status: StatusCode, markup: Markup) -> Response {
+    with(status, markup, &[])
+}
+
+/// [`html`] with extra headers stapled on, such as htmx's push-URL header.
+///
+/// The extra headers ride on the same single builder, so every response —
+/// plain or decorated — keeps the same freshness rule.
+#[must_use]
+pub fn with(status: StatusCode, markup: Markup, headers: &[(&'static str, String)]) -> Response {
     let mut response = (status, Html(markup.into_string())).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    for (name, value) in headers {
+        if let Ok(value) = HeaderValue::from_str(value) {
+            response.headers_mut().insert(*name, value);
+        }
+    }
     response
 }

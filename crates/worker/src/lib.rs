@@ -18,6 +18,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![deny(missing_docs)]
 
+pub mod chrome;
 pub mod config;
 pub mod entropy;
 pub mod extract;
@@ -26,6 +27,7 @@ pub mod llm;
 pub mod respond;
 pub mod routes;
 pub mod state;
+pub mod window;
 
 use axum::response::IntoResponse;
 use tower_service::Service;

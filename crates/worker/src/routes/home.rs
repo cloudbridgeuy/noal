@@ -1,5 +1,6 @@
 //! The home page, and the catch-all for unknown paths.
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use noal_view::layout::Chrome;
@@ -7,14 +8,21 @@ use noal_view::windows::{Current, Windows};
 
 use crate::extract::Visitor;
 use crate::respond;
+use crate::state::AppState;
 
 /// Render the home page for whoever is asking.
 ///
-/// No window is stored yet, so every page's tree carries Home alone.
-pub async fn show(visitor: Visitor) -> Response {
+/// A signed-in viewer's tree is read for real; an anonymous viewer renders no
+/// palette, so their chrome carries no tree worth reading.
+pub async fn show(State(state): State<AppState>, visitor: Visitor) -> Response {
+    let windows = match &visitor.0 {
+        Some(claims) => crate::chrome::build(&state, &claims.user_id).await,
+        None => Windows::Tree(Vec::new()),
+    };
+
     let chrome = Chrome {
         viewer: visitor.viewer(),
-        windows: Windows::Tree(Vec::new()),
+        windows,
         current: Current::Home,
     };
     respond::html(StatusCode::OK, noal_view::pages::home(&chrome))
