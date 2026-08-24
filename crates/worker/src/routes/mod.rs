@@ -7,6 +7,7 @@ mod ask;
 mod auth;
 mod health;
 mod home;
+mod window;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -24,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::alive))
         .route("/health/db", get(health::database))
         .route("/health/llm", get(health::model))
+        .route("/w/{id}", get(window::show))
         .fallback(home::not_found)
         .with_state(state)
 }

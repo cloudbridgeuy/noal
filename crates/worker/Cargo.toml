@@ -35,6 +35,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 console_error_panic_hook.workspace = true
 send_wrapper.workspace = true

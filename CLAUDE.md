@@ -74,6 +74,12 @@ These were found the hard way. The evidence is in
 - **Prefer `simple_query` over `query` when Hyperdrive caching is off.**
   A prepared statement needs the cache. `/health/db` uses `simple_query` so it
   works in every configuration.
+  **The window write path is the exception, and it goes the other way:** the
+  insert and every read scoped by `user_id` interpolate user input, so they
+  always use `query` with bound parameters — never `simple_query`, whose
+  string interpolation is an injection surface. That makes Hyperdrive caching
+  a deployment requirement, not an option, for any environment that saves
+  windows: a prepared statement without the cache fails at runtime.
 
 ## Authentication
 
