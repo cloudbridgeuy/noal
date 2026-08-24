@@ -19,7 +19,10 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
   overflow: auto; padding: 1rem; font: 13px/1.4 ui-monospace, monospace; z-index: 9; }
 #palette[hidden] { display: none; }
 #palette .tabs { display: flex; gap: 1.5rem; border-bottom: 1px solid #444; margin-bottom: .75rem; padding-bottom: .5rem; }
-#palette .tabs span { font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+#palette .tabs button { font: inherit; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  background: none; border: none; color: inherit; padding: 0 0 .25rem; cursor: pointer;
+  border-bottom: 2px solid transparent; }
+#palette .tabs button.active { color: #fff; border-bottom-color: #9cf; }
 #palette ul { list-style: none; margin: 0; padding: 0; }
 #palette ul ul { padding-left: 1rem; }
 #palette a { color: #9cf; }
@@ -29,7 +32,7 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 #debug-copy { font: inherit; }
 ";
 
-/// The script that toggles the drawer, marks the current window row, and fills
+/// The script that toggles the drawer, switches the palette tabs, and fills
 /// the debug tab from the last answer.
 ///
 /// It reads `#ask-debug` once when the page loads and again after every htmx
@@ -45,6 +48,15 @@ const OVERLAY_SCRIPT: &str = r#"
     show(panel.hidden);
     var current = document.getElementById('window-current');
     if (current) current.scrollIntoView({ block: 'center' });
+  });
+  var tabs = document.querySelectorAll('#palette .tabs button');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var windows = tab.id === 'tab-windows';
+      tabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
+      document.getElementById('windows-tab').hidden = !windows;
+      document.getElementById('debug-tab').hidden = windows;
+    });
   });
   function render(data) {
     var out = document.getElementById('debug-content');
@@ -101,11 +113,14 @@ fn palette(chrome: &Chrome) -> Markup {
     html! {
         button #debug-toggle type="button" title="Toggle the side panel" { "menu" }
         aside #palette hidden {
-            div .tabs { span { "Windows" } span { "Debug" } }
+            div .tabs {
+                button #tab-windows type="button" .active { "Windows" }
+                button #tab-debug type="button" { "Debug" }
+            }
             section #windows-tab {
                 (tree(&chrome.windows, &chrome.current))
             }
-            section #debug-tab {
+            section #debug-tab hidden {
                 p { button #debug-copy type="button" { "copy" } }
                 div #debug-content {
                     p { "Ask something; the plan, template, and timings appear here." }
@@ -240,8 +255,6 @@ mod tests {
     fn a_signed_in_page_carries_the_palette_with_both_tabs() {
         let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
         assert!(rendered.contains("id=\"palette\""));
-        assert!(rendered.contains("<span>Windows</span>"));
-        assert!(rendered.contains("<span>Debug</span>"));
         assert!(rendered.contains("id=\"window-tree\""));
         assert!(rendered.contains(">Home</a>"));
         assert!(rendered.contains("id=\"debug-content\""));
@@ -249,6 +262,33 @@ mod tests {
         // The debug renderer also runs at load time, for pages that arrive
         // already carrying an answer.
         assert!(rendered.contains("\n  update();"));
+    }
+
+    #[test]
+    fn the_palette_tabs_are_buttons_with_windows_active_by_default() {
+        let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
+        // The tabs are real buttons the script can click.
+        assert!(rendered.contains(
+            "<button class=\"active\" id=\"tab-windows\" type=\"button\">Windows</button>"
+        ));
+        assert!(rendered.contains("<button id=\"tab-debug\" type=\"button\">Debug</button>"));
+        // Each section carries the id the script targets, and Debug starts
+        // hidden while Windows shows.
+        assert!(rendered.contains("<section id=\"windows-tab\">"));
+        assert!(rendered.contains("<section id=\"debug-tab\" hidden>"));
+    }
+
+    #[test]
+    fn the_overlay_script_switches_the_palette_tabs() {
+        let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
+        // Clicking a tab moves the active style and swaps the two sections
+        // through `hidden`, the same mechanism as the drawer itself.
+        assert!(rendered.contains(".tabs button"));
+        assert!(rendered.contains("classList.toggle('active', t === tab)"));
+        assert!(rendered.contains("'windows-tab').hidden = !windows;"));
+        assert!(rendered.contains("'debug-tab').hidden = windows;"));
+        // The active style is real CSS, not just a class name.
+        assert!(rendered.contains("#palette .tabs button.active"));
     }
 
     #[test]
