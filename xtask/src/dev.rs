@@ -1,15 +1,17 @@
 //! The local development launcher.
 //!
 //! The top half is a functional core: it turns facts about the machine into an
-//! ordered plan of prerequisite fixes, and decides staleness and target
-//! presence from injected values. Those decisions are pure, so they are unit
-//! tested without touching the filesystem or spawning a process.
+//! ordered plan of prerequisite fixes, and decides staleness, target
+//! presence, and how `.dev.vars` entries merge over the process environment
+//! from injected values. Those decisions are pure, so they are unit tested
+//! without touching the filesystem or spawning a process.
 //!
 //! The bottom half is the shell: it reads `.dev.vars`, probes for tools,
 //! reads modification times, runs each fix with its output inherited so
 //! failures speak for themselves, and finally replaces this process with
 //! wrangler.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -170,7 +172,7 @@ pub struct DevArgs {
 /// Returns an error when Node is missing entirely or any fix command fails;
 /// the failing tool's own output has already been printed by then.
 pub fn run(args: &DevArgs) -> Result<()> {
-    check_dev_vars()?;
+    let file_vars = check_dev_vars()?;
 
     let facts = gather_facts();
 
@@ -185,7 +187,7 @@ pub fn run(args: &DevArgs) -> Result<()> {
         run_step(&step)?;
     }
 
-    start_wrangler(&args.wrangler_args)
+    start_wrangler(&file_vars, &args.wrangler_args)
 }
 
 /// Judge `.dev.vars` before anything is installed or started.
@@ -197,9 +199,11 @@ pub fn run(args: &DevArgs) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error when the file is missing, unreadable, or has gaps; the
-/// message names exactly what is wrong and how to fix it.
-fn check_dev_vars() -> Result<()> {
+/// Returns an error when the file is missing, unreadable, has gaps, or its
+/// Hyperdrive connection string cannot serve wrangler; the message names
+/// exactly what is wrong and how to fix it. Otherwise the parsed variables
+/// come back, ready to be handed to wrangler's environment.
+fn check_dev_vars() -> Result<BTreeMap<String, String>> {
     let root = workspace_root();
     let file = dev_vars::path(&root);
 
@@ -216,16 +220,27 @@ fn check_dev_vars() -> Result<()> {
         }
     };
 
-    let problems = dev_vars::gaps(&dev_vars::parse(&contents));
-    if problems.is_empty() {
-        return Ok(());
+    let vars = dev_vars::parse(&contents);
+    let problems = dev_vars::gaps(&vars);
+    if !problems.is_empty() {
+        let mut report = format!("{} needs attention before dev can start:", file.display());
+        for problem in &problems {
+            report.push_str(&format!("\n  - {problem}"));
+        }
+        return Err(eyre!(report));
     }
 
-    let mut report = format!("{} needs attention before dev can start:", file.display());
-    for problem in &problems {
-        report.push_str(&format!("\n  - {problem}"));
+    // Wrangler reads this variable from its environment, not from
+    // `.dev.vars`, and refuses to start over a passwordless URL even though
+    // local Postgres under trust auth would accept one — better to say so
+    // here than after wrangler has failed.
+    if let dev_vars::DatabaseUrl::Current(url) = dev_vars::database_url(&vars) {
+        if let Some(problem) = dev_vars::hyperdrive_url_problem(&url) {
+            return Err(eyre!("{}: {problem}", file.display()));
+        }
     }
-    Err(eyre!(report))
+
+    Ok(vars)
 }
 
 /// Probe the machine once, before anything changes.
@@ -290,7 +305,12 @@ fn run_step(step: &Step) -> Result<()> {
 }
 
 /// Replace this process with `wrangler dev`, forwarding extra arguments.
-fn start_wrangler(extra: &[String]) -> Result<()> {
+///
+/// Wrangler reads the local Hyperdrive connection string from its
+/// environment, not from `.dev.vars`, so every parsed entry is placed into
+/// the child's environment first. A variable the shell already exported
+/// keeps its exported value, matching standard dotenv precedence.
+fn start_wrangler(file_vars: &BTreeMap<String, String>, extra: &[String]) -> Result<()> {
     let forwarded = if extra.is_empty() {
         String::new()
     } else {
@@ -298,8 +318,21 @@ fn start_wrangler(extra: &[String]) -> Result<()> {
     };
     println!("$ pnpm exec wrangler dev{forwarded}");
 
+    let process_env: BTreeMap<String, String> = std::env::vars().collect();
+    let injected = file_vars
+        .keys()
+        .filter(|name| !process_env.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !injected.is_empty() {
+        println!("Loaded from .dev.vars: {}", injected.join(", "));
+    }
+
     let mut command = Command::new("pnpm");
     command.args(["exec", "wrangler", "dev"]).args(extra);
+    for (name, value) in dev_vars::overlay(&process_env, file_vars) {
+        command.env(name, value);
+    }
 
     // Replacing the process lets Ctrl-C reach wrangler directly instead of
     // passing through this intermediate.
