@@ -19,7 +19,7 @@ use noal_core::ask::prompt::{strip_fences, PLAN_PREAMBLE, RENDER_PREAMBLE};
 use serde::Deserialize;
 use tokio_postgres::SimpleQueryMessage;
 
-use crate::extract::SignedIn;
+use crate::extract::{Fragment, SignedIn};
 use crate::failure::Failure;
 use crate::llm;
 use crate::state::{now_millis, AppState};
@@ -33,18 +33,27 @@ pub struct AskForm {
 
 /// Run the pipeline and render whatever it produced.
 ///
-/// # Errors
+/// Names [`Fragment<SignedIn>`] rather than [`SignedIn`] directly, so an
+/// absent or stale session still refuses the request — the same guarantee
+/// [`crate::extract`] documents — but the refusal renders as a toast rather
+/// than a whole document landing inside `#ask-result`.
 ///
-/// Returns a [`Failure`] only for transport-level trouble: the model or the
-/// database unreachable. A stage the pipeline refuses is not a failure; it is
-/// an [`Outcome`] the view explains.
+/// A transport-level `Failure` — the model or the database unreachable — is
+/// handled the same way, through [`Failure::toast`], rather than returned:
+/// every non-`200` this handler can produce must carry a toast body, and a
+/// plain `Response` return type is what makes that total rather than a
+/// convention a future caller could forget. A stage the pipeline refuses is
+/// not a failure at all; it is an [`Outcome`] the view explains, still
+/// answering `200`.
 pub async fn ask(
     State(state): State<AppState>,
-    _signed_in: SignedIn,
+    Fragment(_signed_in): Fragment<SignedIn>,
     Form(form): Form<AskForm>,
-) -> Result<Response, Failure> {
-    let outcome = run(&state, form.request.trim().to_owned()).await?;
-    Ok(render_outcome(&outcome))
+) -> Response {
+    match run(&state, form.request.trim().to_owned()).await {
+        Ok(outcome) => render_outcome(&outcome),
+        Err(failure) => failure.toast(),
+    }
 }
 
 /// Render one [`Outcome`]'s body: the fragment for its verdict, plus its

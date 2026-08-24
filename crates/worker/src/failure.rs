@@ -108,3 +108,24 @@ impl IntoResponse for Failure {
         (status, Html(markup.into_string())).into_response()
     }
 }
+
+impl Failure {
+    /// Render this failure as a toast, for a fragment route rather than a
+    /// whole document.
+    ///
+    /// A document route lets [`IntoResponse::into_response`] answer, because
+    /// the whole page is being replaced anyway. A fragment route swaps into
+    /// part of a page that is already on screen, so a whole `<html>` document
+    /// has nowhere to go; this renders the same status and the same message
+    /// as one toast instead, and logs [`Failure::detail`] the same way
+    /// `into_response` does.
+    #[must_use]
+    pub fn toast(self) -> Response {
+        worker::console_error!("{}", self.detail());
+
+        let status = self.status();
+        let markup = noal_view::layout::toast(self.message());
+
+        (status, Html(markup.into_string())).into_response()
+    }
+}
