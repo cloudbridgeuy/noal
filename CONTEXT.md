@@ -121,34 +121,25 @@ be. That makes the boundary structural.
 
 ## The palette and the toast region are page chrome
 
-**Chosen over** wiring the ask form itself to notice a failed request, and
-over folding a failure message into `#palette`'s own markup.
+**Chosen over** wiring the ask form itself to notice a failed request, over
+folding a failure message into `#palette`'s own markup, and over giving a
+refused pipeline stage its own status code.
 
 `layout::page()` renders `#toasts` and a hidden `#toast-offline` template
-beside `#palette`, all three under the same `show_palette` condition, and
-`OVERLAY_SCRIPT` listens for `htmx:responseError` and `htmx:sendError` on
-`document.body` rather than on `#ask-form`. One listener then answers every
-htmx request a page makes, not only `/ask`'s. A `401` sends the browser to
-`/auth/login?next=`; anything else appends the failed response's own toast
-body, or clones the offline template when there is no body to append — a
-dropped connection, or the Worker itself unreachable.
+beside `#palette`, and `OVERLAY_SCRIPT` listens for `htmx:responseError` and
+`htmx:sendError` on `document.body` rather than on `#ask-form`. One listener
+answers every htmx request a page makes, not only `/ask`'s. A `401` sends the
+browser to `/auth/login?next=`; anything else appends the failed response's own
+toast body, or clones the offline template when there is no body to append.
 
-The layout now knows something about `/ask` it did not before: a `401` from
-an htmx request means a session ran out. `OVERLAY_SCRIPT`'s own doc comment
-used to claim otherwise; that line is corrected, not merely stale.
+A refused pipeline stage still answers `200`. htmx only runs the out-of-band
+swap that keeps the debug panel current on a response it treats as successful,
+so moving a refusal onto its own status code would cost every refused ask its
+debug payload. Everything that is not a `200` is handled in the browser
+instead, by the listener above.
 
-A refused pipeline stage still answers `200`. That is deliberate and carried
-over from the slice before this one: `render_outcome` retargets the swap to
-`#toasts` but keeps the status, because htmx only runs the out-of-band swap
-that keeps the debug panel current on a response it treats as successful.
-Moving a refusal onto its own status code was rejected for that reason — it
-would cost every refused ask its debug payload. Everything that is not a
-`200` is instead handled entirely in the browser, by the listener above,
-never inside the pipeline.
-
-A form in the page body that read its own errors was rejected too: it would
-mean every page with an ask form re-implements the same handling, rather than
-one page-chrome region — the toasts, the offline template, the listener —
-answering for the whole document once. The cost is the one already paid for
-the palette itself: an anonymous viewer gets no toast region either, because
-`#toasts` exists only where `#palette` does.
+A form that read its own errors was rejected too: every page with an ask form
+would re-implement the same handling, rather than one page-chrome region
+answering for the whole document. The cost is the one already paid for the
+palette itself: an anonymous viewer gets no toast region, because `#toasts`
+exists only where `#palette` does.

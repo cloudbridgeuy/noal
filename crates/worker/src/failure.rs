@@ -96,20 +96,7 @@ impl Failure {
     pub fn detail(&self) -> String {
         self.to_string()
     }
-}
 
-impl IntoResponse for Failure {
-    fn into_response(self) -> Response {
-        worker::console_error!("{}", self.detail());
-
-        let status = self.status();
-        let markup = noal_view::pages::failure(&Viewer::Anonymous, status.as_u16(), self.message());
-
-        (status, Html(markup.into_string())).into_response()
-    }
-}
-
-impl Failure {
     /// Render this failure as a toast, for a fragment route rather than a
     /// whole document.
     ///
@@ -125,6 +112,17 @@ impl Failure {
 
         let status = self.status();
         let markup = noal_view::layout::toast(self.message());
+
+        (status, Html(markup.into_string())).into_response()
+    }
+}
+
+impl IntoResponse for Failure {
+    fn into_response(self) -> Response {
+        worker::console_error!("{}", self.detail());
+
+        let status = self.status();
+        let markup = noal_view::pages::failure(&Viewer::Anonymous, status.as_u16(), self.message());
 
         (status, Html(markup.into_string())).into_response()
     }
