@@ -43,7 +43,12 @@ pub async fn ask(
     Form(form): Form<AskForm>,
 ) -> Result<Html<String>, Failure> {
     let outcome = run(&state, form.request.trim().to_owned()).await?;
-    Ok(Html(noal_view::ask::answer(&outcome).into_string()))
+    let mut body = noal_view::ask::answer(&outcome).into_string();
+    // The debug payload rides beside the answer as a top-level, out-of-band
+    // element: htmx only processes `hx-swap-oob` at the top of the response,
+    // not nested inside the swapped fragment.
+    body.push_str(&noal_view::layout::debug_payload(&outcome).into_string());
+    Ok(Html(body))
 }
 
 /// Drive the pipeline to completion.

@@ -44,8 +44,7 @@ pub fn greeting() -> Markup {
     }
 }
 
-/// The answer fragment: the request, the result or a failure, and the debug
-/// payload a later overlay reads.
+/// The answer fragment: the request, and the result or a failure.
 #[must_use]
 pub fn answer(outcome: &Outcome) -> Markup {
     html! {
@@ -60,7 +59,6 @@ pub fn answer(outcome: &Outcome) -> Markup {
                     (form())
                 }
             }
-            script #ask-debug type="application/json" { (PreEscaped(outcome.debug_json())) }
         }
     }
 }
@@ -124,14 +122,13 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_places_the_filled_html_verbatim_and_carries_debug_json() {
+    fn an_answer_places_the_filled_html_verbatim_and_carries_no_debug_element() {
         let html = answer(&outcome(Verdict::Answered {
             html: "<ul><li>a</li></ul>".into(),
         }))
         .into_string();
         assert!(html.contains("<ul><li>a</li></ul>"));
-        assert!(html.contains("id=\"ask-debug\""));
-        assert!(html.contains("\"request\":\"open tasks\""));
+        assert!(!html.contains("id=\"ask-debug\""));
         assert!(!html.contains("hx-post"));
     }
 
@@ -143,6 +140,7 @@ mod tests {
         .into_string();
         assert!(html.contains("could not run the query"));
         assert!(html.contains("hx-post=\"/ask\""));
+        assert!(!html.contains("id=\"ask-debug\""));
     }
 
     #[test]
