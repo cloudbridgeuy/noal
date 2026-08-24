@@ -152,8 +152,8 @@ pub fn page(title: &str, viewer: &Viewer, palette: Palette, body: &Markup) -> Ma
 /// The command palette itself: a toggle and the ask form, in its own chrome.
 ///
 /// Rendered only from [`page`], and only for [`Palette::Open`]. The toggle
-/// button has no click behaviour yet — wiring it is a later slice's job — so
-/// this renders the affordance without pretending it does anything today.
+/// button carries no script: the server, not a click handler, decides
+/// whether the palette starts open, so there is nothing to wire it to yet.
 fn render_palette() -> Markup {
     html! {
         div #palette {
