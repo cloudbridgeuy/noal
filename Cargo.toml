@@ -62,7 +62,7 @@ noal_view = { version = "0.0.0", path = "crates/view" }
 # their wasm_bindgen glue symbols collide at the wasm-bindgen linker step.
 # Lift the pin once a published reqwest requires wasm-streams ^0.6.
 worker = { version = "=0.8.3", features = ["http", "axum", "tokio-postgres"] }
-worker-macros = { version = "=0.8.3", features = ["http"] }
+worker-macros = { version = "=0.8.5", features = ["http"] }
 
 # Routing. default-features = false keeps tokio and hyper out of the Wasm build.
 # `form` decodes the ask form's urlencoded body; it needs no tokio or hyper.
