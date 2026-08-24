@@ -1,6 +1,7 @@
 //! The page chrome shared by every full document.
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
+use noal_core::ask::outcome::Outcome;
 
 /// The htmx build noal loads. Pinned, and served with an integrity hash, so a
 /// change to the CDN cannot change what runs in the browser.
@@ -37,8 +38,9 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 /// The script that toggles the panel and fills it from the last answer, and
 /// that wires the command palette's keyboard shortcut and button.
 ///
-/// It reads `#ask-debug` after every htmx swap, so each answer carries its own
-/// data and the chrome never needs to know what an ask is.
+/// It reads `#ask-debug` after every htmx swap. That element is chrome, kept
+/// current by an out-of-band swap alongside every answer, so this script
+/// never needs to know what an ask is or where its fragment landed.
 ///
 /// `#palette` is absent on most pages (an anonymous viewer, an error page),
 /// so the palette wiring is guarded on finding it first and does nothing on a
@@ -69,7 +71,10 @@ const OVERLAY_SCRIPT: &str = r#"
   document.body.addEventListener('htmx:afterSwap', function () {
     var el = document.getElementById('ask-debug');
     if (!el) return;
-    try { render(JSON.parse(el.textContent)); } catch (err) { console.error('debug payload', err); }
+    var text = el.textContent;
+    // Blank until the first ask's out-of-band swap arrives; nothing to parse yet.
+    if (!text || !text.trim()) return;
+    try { render(JSON.parse(text)); } catch (err) { console.error('debug payload', err); }
   });
   var copy = document.getElementById('debug-copy');
   copy.addEventListener('click', function () {
@@ -127,6 +132,11 @@ const OVERLAY_SCRIPT: &str = r#"
 "#;
 
 /// The hidden panel and its toggle, present on every page.
+///
+/// The `#ask-debug` element starts empty. It is the one place in the document
+/// that holds the debug payload; a handler replaces it out of band with
+/// [`debug_payload`] after every ask, so the panel always shows the answer
+/// most recently swapped in, wherever on the page that answer landed.
 fn debug_overlay() -> Markup {
     html! {
         button #debug-toggle type="button" title="Toggle debug panel" { "debug" }
@@ -136,8 +146,26 @@ fn debug_overlay() -> Markup {
                 button #debug-copy type="button" { "copy" }
             }
             div #debug-content { p { "Ask something; the plan, template, and timings appear here." } }
+            script #ask-debug type="application/json" {}
         }
         script { (PreEscaped(OVERLAY_SCRIPT)) }
+    }
+}
+
+/// The out-of-band replacement for `#ask-debug`, carrying one ask's payload.
+///
+/// `hx-swap-oob="outerHTML"` tells htmx to swap this element in wherever the
+/// existing `#ask-debug` sits in the document, id and all, rather than where
+/// this element appears in the response body. A handler appends the markup
+/// this returns beside whatever fragment it renders for the ask itself, for
+/// every [`Outcome`], whichever verdict it reached — a refused stage still
+/// has attempts and timings worth showing.
+#[must_use]
+pub fn debug_payload(outcome: &Outcome) -> Markup {
+    html! {
+        script #ask-debug type="application/json" hx-swap-oob="outerHTML" {
+            (PreEscaped(outcome.debug_json()))
+        }
     }
 }
 
@@ -242,8 +270,19 @@ pub fn header(viewer: &Viewer) -> Markup {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{header, page, Palette, Viewer};
+    use super::{debug_payload, header, page, Palette, Viewer};
     use maud::html;
+    use noal_core::ask::outcome::{Debug, Outcome, Stage, Verdict};
+
+    /// An [`Outcome`] with a fixed request, for tests that only care about
+    /// the verdict.
+    fn outcome(verdict: Verdict) -> Outcome {
+        Outcome {
+            request: "open tasks".into(),
+            verdict,
+            debug: Debug::default(),
+        }
+    }
 
     /// Pull the opening tag containing `needle` out of rendered markup.
     ///
@@ -277,6 +316,59 @@ mod tests {
         let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
         assert!(rendered.contains("id=\"debug-panel\""));
         assert!(rendered.contains("htmx:afterSwap"));
+    }
+
+    #[test]
+    fn a_page_carries_exactly_one_ask_debug_element() {
+        let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
+        assert_eq!(rendered.matches("id=\"ask-debug\"").count(), 1);
+    }
+
+    #[test]
+    fn the_page_s_ask_debug_element_starts_empty_and_carries_no_oob_swap() {
+        let rendered = page("Home", &Viewer::Anonymous, Palette::Closed, &html! {}).into_string();
+        let tag = opening_tag_containing(&rendered, "id=\"ask-debug\"");
+        assert!(tag.contains("type=\"application/json\""));
+        assert!(!tag.contains("hx-swap-oob"));
+        let after = &rendered[rendered.find(tag).unwrap() + tag.len()..];
+        assert!(after.trim_start().starts_with("</script>"));
+    }
+
+    #[test]
+    fn debug_payload_replaces_ask_debug_out_of_band() {
+        let rendered = debug_payload(&outcome(Verdict::Answered {
+            html: "<ul></ul>".into(),
+        }))
+        .into_string();
+        let tag = opening_tag_containing(&rendered, "id=\"ask-debug\"");
+        assert!(tag.contains("type=\"application/json\""));
+        assert!(tag.contains("hx-swap-oob=\"outerHTML\""));
+    }
+
+    #[test]
+    fn debug_payload_carries_valid_json_for_an_answered_outcome() {
+        let rendered = debug_payload(&outcome(Verdict::Answered {
+            html: "<ul></ul>".into(),
+        }))
+        .into_string();
+        let start = rendered.find('>').unwrap() + 1;
+        let end = rendered.rfind("</script>").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered[start..end]).unwrap();
+        assert_eq!(value["request"], "open tasks");
+        assert!(value["failed_stage"].is_null());
+    }
+
+    #[test]
+    fn debug_payload_carries_valid_json_for_a_refused_outcome() {
+        let rendered = debug_payload(&outcome(Verdict::Failed {
+            stage: Stage::Query,
+        }))
+        .into_string();
+        let start = rendered.find('>').unwrap() + 1;
+        let end = rendered.rfind("</script>").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered[start..end]).unwrap();
+        assert_eq!(value["request"], "open tasks");
+        assert_eq!(value["failed_stage"], "query");
     }
 
     #[test]
