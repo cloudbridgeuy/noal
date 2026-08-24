@@ -94,9 +94,9 @@ impl FromRequestParts<AppState> for Visitor {
 /// today. Naming `Fragment<SignedIn>` instead of `SignedIn` keeps the same
 /// guarantee, an absent or stale session refuses the request, while changing
 /// only how the refusal is rendered: [`Failure::toast`] instead of
-/// [`Failure::into_response`], so the browser gets a toast it can append to
-/// `#toasts` rather than a whole `<html>` document landing inside a swap
-/// target such as `#ask-result`.
+/// [`axum::response::IntoResponse::into_response`], so the browser gets a
+/// toast it can append to `#toasts` rather than a whole `<html>` document
+/// landing inside a swap target such as `#ask-result`.
 #[derive(Debug, Clone)]
 pub struct Fragment<E>(pub E);
 
