@@ -145,10 +145,10 @@ fn assemble(index: usize, entries: &[Entry], children: &[Vec<usize>]) -> Node {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{tree, Entry};
+    use super::{tree, Entry, Window};
+    use crate::ask::plan::{Column, ColumnKind, Plan};
     use uuid::Uuid;
 
-    /// Distinct well-formed ids, so tests never parse or roll their own.
     fn id(n: u8) -> Uuid {
         Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, n])
     }
@@ -253,5 +253,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![id(4)]
         );
+    }
+
+    fn plan() -> Plan {
+        Plan {
+            sql: "select id from ticket".into(),
+            shape: vec![Column {
+                name: "id".into(),
+                kind: ColumnKind::Integer,
+                description: String::new(),
+                fields: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn an_answered_ask_becomes_a_savable_window() {
+        let window = Window::answered(
+            id(9),
+            "user_01",
+            "open tasks",
+            Some(&plan()),
+            Some("<p>{{ rows | length }}</p>"),
+        )
+        .unwrap();
+
+        assert_eq!(window.id, id(9));
+        assert_eq!(window.user_id, "user_01");
+        assert_eq!(window.parent_id, None);
+        assert_eq!(window.request, "open tasks");
+        assert_eq!(window.sql, "select id from ticket");
+        assert_eq!(window.name, None);
+        // The shape survives as the JSON the jsonb column stores.
+        let shape = serde_json::to_value(&window.shape).unwrap();
+        assert_eq!(shape[0]["name"], "id");
+    }
+
+    #[test]
+    fn an_answer_without_its_artifacts_cannot_be_saved() {
+        let plan = plan();
+        assert!(Window::answered(id(9), "user_01", "ask", Some(&plan), None).is_none());
+        assert!(Window::answered(id(9), "user_01", "ask", None, Some("<p></p>")).is_none());
+        assert!(Window::answered(id(9), "user_01", "ask", None, None).is_none());
     }
 }
