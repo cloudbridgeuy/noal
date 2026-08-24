@@ -87,7 +87,7 @@ maud = "0.27"
 tera = { version = "2.2", default-features = false }
 
 # Session cookie sealing. Pure Rust, so the hot path stays Send.
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 # chacha20poly1305 reaches rand_core 0.6, which reaches getrandom 0.2. noal
