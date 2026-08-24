@@ -34,10 +34,16 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 #palette #ask-form { margin: 0; }
 ";
 
-/// The script that toggles the panel and fills it from the last answer.
+/// The script that toggles the panel and fills it from the last answer, and
+/// that wires the command palette's keyboard shortcut and button.
 ///
 /// It reads `#ask-debug` after every htmx swap, so each answer carries its own
 /// data and the chrome never needs to know what an ask is.
+///
+/// `#palette` is absent on most pages (an anonymous viewer, an error page),
+/// so the palette wiring is guarded on finding it first and does nothing on a
+/// page without one, leaving the rest of this script — shared with the debug
+/// overlay above — to run regardless.
 const OVERLAY_SCRIPT: &str = r#"
 (function () {
   var panel = document.getElementById('debug-panel');
@@ -86,6 +92,37 @@ const OVERLAY_SCRIPT: &str = r#"
     }
     setTimeout(function () { copy.textContent = 'copy'; }, 1500);
   });
+  var palette = document.getElementById('palette');
+  if (palette) {
+    var paletteToggle = document.getElementById('palette-toggle');
+    var paletteInput = document.getElementById('ask-input');
+    // navigator.platform is deprecated, but it is the only signal small
+    // enough for a tooltip this size; a wrong guess here is cosmetic.
+    paletteToggle.title = /Mac/.test(navigator.platform)
+      ? 'Command palette (⌘K)'
+      : 'Command palette (Ctrl+K)';
+    function togglePalette() {
+      // Flip the attribute only. Re-rendering the form would wipe out
+      // whatever the user has already typed into it.
+      palette.hidden = !palette.hidden;
+      if (!palette.hidden && paletteInput) paletteInput.focus();
+    }
+    paletteToggle.addEventListener('click', togglePalette);
+    document.addEventListener('keydown', function (event) {
+      var target = event.target;
+      var typingElsewhere = target && target !== paletteInput && (
+        target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' || target.isContentEditable);
+      if (typingElsewhere) return;
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey &&
+          event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        togglePalette();
+      } else if (event.key === 'Escape' && !palette.hidden) {
+        togglePalette();
+      }
+    });
+  }
 })();
 "#;
 
@@ -170,9 +207,10 @@ pub fn page(title: &str, viewer: &Viewer, palette: Palette, body: &Markup) -> Ma
 /// The command palette itself: a toggle and the ask form, in its own chrome.
 ///
 /// Rendered only from [`page`], and only when it has decided the palette
-/// should show: [`Palette::Open`] for a signed-in viewer. The toggle button
-/// carries no script: the server, not a click handler, decides whether the
-/// palette starts open, so there is nothing to wire it to yet.
+/// should show: [`Palette::Open`] for a signed-in viewer. The server decides
+/// only whether the palette is on the page at all; once it is, `OVERLAY_SCRIPT`
+/// owns the open/closed state through the `hidden` attribute, so this markup
+/// itself never changes and never loses whatever the ask form already holds.
 fn render_palette() -> Markup {
     html! {
         div #palette {
@@ -304,5 +342,41 @@ mod tests {
         let rendered = header(&viewer).into_string();
         assert!(!rendered.contains("<script>alert(1)</script>"));
         assert!(rendered.contains("&lt;script&gt;"));
+    }
+
+    // The palette's runtime behaviour — opening, closing, focus, and surviving
+    // typed text — happens inside `OVERLAY_SCRIPT`'s JavaScript, which the
+    // Rust toolchain never executes. These tests pin the source text of the
+    // pieces that behaviour depends on, so a careless edit is caught even
+    // though the behaviour itself is not.
+
+    #[test]
+    fn the_overlay_script_guards_a_missing_palette() {
+        assert!(super::OVERLAY_SCRIPT.contains("if (palette)"));
+    }
+
+    #[test]
+    fn the_overlay_script_reads_the_platform_for_the_toggle_title() {
+        assert!(super::OVERLAY_SCRIPT.contains("navigator.platform"));
+    }
+
+    #[test]
+    fn the_overlay_script_matches_the_command_or_control_k_chord_only() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("event.metaKey || event.ctrlKey"));
+        assert!(script.contains("!event.shiftKey"));
+        assert!(script.contains("!event.altKey"));
+        assert!(script.contains("event.key.toLowerCase() === 'k'"));
+        assert!(script.contains("event.preventDefault()"));
+    }
+
+    #[test]
+    fn the_overlay_script_closes_on_escape() {
+        assert!(super::OVERLAY_SCRIPT.contains("event.key === 'Escape'"));
+    }
+
+    #[test]
+    fn the_style_still_hides_a_hidden_palette() {
+        assert!(super::STYLE.contains("#palette[hidden] { display: none; }"));
     }
 }
