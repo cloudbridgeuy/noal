@@ -8,12 +8,12 @@
 //! request supplied.
 
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use noal_core::auth::AuthError;
 use noal_core::session::SessionError;
-use noal_view::layout::Viewer;
 
 use crate::config::ConfigError;
+use crate::respond;
 
 /// Everything that can stop a request.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -103,8 +103,12 @@ impl IntoResponse for Failure {
         worker::console_error!("{}", self.detail());
 
         let status = self.status();
-        let markup = noal_view::pages::failure(&Viewer::Anonymous, status.as_u16(), self.message());
+        let markup = noal_view::pages::failure(
+            &noal_view::layout::Chrome::anonymous(),
+            status.as_u16(),
+            self.message(),
+        );
 
-        (status, Html(markup.into_string())).into_response()
+        respond::html(status, markup)
     }
 }

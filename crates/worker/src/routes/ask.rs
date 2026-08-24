@@ -9,7 +9,7 @@
 use std::future::Future;
 
 use axum::extract::State;
-use axum::response::Html;
+use axum::response::Response;
 use axum::Form;
 use noal_core::ask::outcome::{Outcome, Stage, Timing};
 use noal_core::ask::pipeline::{Event, Pipeline, Step};
@@ -21,6 +21,7 @@ use tokio_postgres::SimpleQueryMessage;
 use crate::extract::SignedIn;
 use crate::failure::Failure;
 use crate::llm;
+use crate::respond;
 use crate::state::{now_millis, AppState};
 
 /// The form field the ask form posts.
@@ -41,9 +42,12 @@ pub async fn ask(
     State(state): State<AppState>,
     _signed_in: SignedIn,
     Form(form): Form<AskForm>,
-) -> Result<Html<String>, Failure> {
+) -> Result<Response, Failure> {
     let outcome = run(&state, form.request.trim().to_owned()).await?;
-    Ok(Html(noal_view::ask::answer(&outcome).into_string()))
+    Ok(respond::html(
+        axum::http::StatusCode::OK,
+        noal_view::ask::answer(&outcome),
+    ))
 }
 
 /// Drive the pipeline to completion.
