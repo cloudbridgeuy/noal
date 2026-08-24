@@ -157,6 +157,21 @@ const OVERLAY_SCRIPT: &str = r#"
         }
       }
     });
+    // `HX-Trigger: noal:answered` rides only an answered response; a
+    // refused stage sends no such header, so this fires only once the
+    // pipeline actually produced an answer. htmx dispatches the named
+    // event on the element that made the request (`#ask-form`, which
+    // lives inside `#palette`) and it bubbles to `document`, so listening
+    // here catches it without binding anything to the form itself.
+    //
+    // Set `hidden` directly rather than reuse the toggle helper above:
+    // that helper flips whatever state the palette is already in, so
+    // calling it here would reopen a palette a viewer had already closed
+    // before their answer came back.
+    document.addEventListener('noal:answered', function () {
+      palette.hidden = true;
+      if (paletteInput) paletteInput.value = '';
+    });
   }
 })();
 "#;
@@ -602,6 +617,25 @@ mod tests {
         let script = super::OVERLAY_SCRIPT;
         assert!(script.contains("toasts.addEventListener('click'"));
         assert!(script.contains("closest('.toast-dismiss')"));
+    }
+
+    #[test]
+    fn the_overlay_script_closes_and_empties_the_palette_on_the_answered_event() {
+        let script = super::OVERLAY_SCRIPT;
+        assert!(script.contains("document.addEventListener('noal:answered'"));
+        assert!(script.contains("palette.hidden = true;"));
+        assert!(script.contains("paletteInput.value = '';"));
+    }
+
+    #[test]
+    fn the_overlay_script_never_reopens_the_palette_from_the_answered_event() {
+        // Setting `hidden` directly, rather than calling `togglePalette()`,
+        // is what stops this listener from reopening a palette the viewer
+        // had already closed themselves before their answer came back.
+        let script = super::OVERLAY_SCRIPT;
+        let answered_at = script.find("noal:answered").unwrap();
+        let listener_body = &script[answered_at..];
+        assert!(!listener_body.contains("togglePalette()"));
     }
 
     #[test]
