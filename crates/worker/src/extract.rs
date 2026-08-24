@@ -7,6 +7,7 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use axum::response::Response;
 use noal_core::cookie;
 use noal_core::session::{unseal, SessionClaims, SessionError, COOKIE_NAME};
 use noal_view::layout::Viewer;
@@ -84,5 +85,31 @@ impl FromRequestParts<AppState> for Visitor {
                 Ok(Self(None))
             }
         }
+    }
+}
+
+/// An extractor for a route that answers a swap target, not a whole page.
+///
+/// `E` is any extractor whose own rejection is a [`Failure`] — [`SignedIn`],
+/// today. Naming `Fragment<SignedIn>` instead of `SignedIn` keeps the same
+/// guarantee, an absent or stale session refuses the request, while changing
+/// only how the refusal is rendered: [`Failure::toast`] instead of
+/// [`axum::response::IntoResponse::into_response`], so the browser gets a
+/// toast it can append to `#toasts` rather than a whole `<html>` document
+/// landing inside a swap target such as `#ask-result`.
+#[derive(Debug, Clone)]
+pub struct Fragment<E>(pub E);
+
+impl<E> FromRequestParts<AppState> for Fragment<E>
+where
+    E: FromRequestParts<AppState, Rejection = Failure>,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        E::from_request_parts(parts, state)
+            .await
+            .map(Self)
+            .map_err(Failure::toast)
     }
 }

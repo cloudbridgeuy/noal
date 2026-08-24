@@ -10,6 +10,7 @@
 use super::outcome::{Debug, Outcome, Stage, StageAttempt, Timing, Verdict};
 use super::plan::{wrap_sql, Plan};
 use super::prompt::{plan_prompt, render_prompt, Attempt, MAX_ATTEMPTS};
+use super::validator::forbidden_token;
 
 /// One thing the shell must run before the pipeline can continue.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,7 +124,7 @@ impl Pipeline {
             Event::Queried(Ok(rows)) => self.on_queried_ok(rows),
             Event::Queried(Err(message)) => self.on_queried_err(message),
             Event::Rendered(text) => self.on_rendered(text),
-            Event::Filled(Ok(html)) => vec![Step::Done(self.finish(Verdict::Answered { html }))],
+            Event::Filled(Ok(html)) => self.on_filled_ok(html),
             Event::Filled(Err(error)) => self.on_filled_err(error),
         }
     }
@@ -229,6 +230,50 @@ impl Pipeline {
             vec![Step::Done(
                 self.finish(Verdict::Failed { stage: Stage::Fill }),
             )]
+        }
+    }
+
+    /// The fill succeeded: keep the HTML only if it carries no navigation,
+    /// no script, no fetch, and no handler token — links, forms/iframes,
+    /// CSS `url()`/`@import`, and `hx-*`/`on*` attributes are all covered
+    /// by the scan.
+    ///
+    /// The scan runs on the final HTML because `{{ row.body | safe }}` can
+    /// carry a link out of the database past any scan of the template
+    /// source. A trip is refused exactly as a Tera refusal is: the attempt
+    /// is recorded against [`Stage::Render`] — the fix is a re-render, so
+    /// there is no new stage — the retry prompt carries the TEMPLATE (the
+    /// only thing the model can change) and names the token found in the
+    /// output, and under [`MAX_ATTEMPTS`] the `filled` latch is cleared so
+    /// the retry's fill can still be issued.
+    fn on_filled_ok(&mut self, html: String) -> Vec<Step> {
+        let Some(token) = forbidden_token(&html) else {
+            return vec![Step::Done(self.finish(Verdict::Answered { html }))];
+        };
+        let template = self.template.clone().unwrap_or_default();
+        let error = format!("rendered output carries a forbidden token: {token}");
+        self.debug.attempts.push(StageAttempt {
+            stage: Stage::Render,
+            artifact: template.clone(),
+            error: error.clone(),
+        });
+        self.render_attempts.push(Attempt {
+            artifact: template,
+            error,
+        });
+
+        if self.render_attempts.len() < MAX_ATTEMPTS {
+            self.filled = false;
+            let shape = self
+                .plan
+                .as_ref()
+                .map_or(&[][..], |plan| plan.shape.as_slice());
+            let prompt = render_prompt(&self.request, shape, &self.render_attempts);
+            vec![Step::Render { prompt }]
+        } else {
+            vec![Step::Done(self.finish(Verdict::Failed {
+                stage: Stage::Render,
+            }))]
         }
     }
 
@@ -502,6 +547,116 @@ mod tests {
             .attempts
             .iter()
             .all(|attempt| attempt.stage == Stage::Fill));
+    }
+
+    #[test]
+    fn a_fill_that_carries_a_link_refuses_the_render_and_retries_it() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+
+        let steps = pipeline.apply(Event::Filled(Ok("<a href=\"/x\">go</a>".into())));
+        match steps.as_slice() {
+            [Step::Render { prompt }] => {
+                assert!(prompt.contains("# Previous attempts"));
+                // The error names the token found in the OUTPUT, and the
+                // artifact fed back is the TEMPLATE, never the filled HTML.
+                assert!(prompt.contains("href"));
+                assert!(prompt.contains("<p>{{ rows | length }}</p>"));
+                assert!(!prompt.contains("<a href"));
+            }
+            other => panic!("expected exactly one Render retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tripped_fill_that_recovers_clears_the_latch_and_answers() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        let _ = pipeline.apply(Event::Filled(Ok("<a href=\"/x\">go</a>".into())));
+
+        // The clean re-render must reach a Fill again: the latch the
+        // tripped fill set has been cleared.
+        let after_render = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        match after_render.as_slice() {
+            [Step::Fill { .. }] => {}
+            other => panic!("expected exactly one Fill step, got {other:?}"),
+        }
+
+        let done = pipeline.apply(Event::Filled(Ok("<p>1</p>".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Answered {
+                html: "<p>1</p>".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_second_tripped_fill_ends_the_ask_at_the_render_stage() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        let _ = pipeline.apply(Event::Filled(Ok("<a href=\"/x\">go</a>".into())));
+        let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+
+        let done = pipeline.apply(Event::Filled(Ok("<script>x</script>".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Failed {
+                stage: Stage::Render
+            }
+        );
+        assert_eq!(outcome.debug.attempts.len(), 2);
+        assert!(
+            outcome
+                .debug
+                .attempts
+                .iter()
+                .all(|attempt| attempt.stage == Stage::Render),
+            "both refusals are recorded against Render"
+        );
+        assert_eq!(
+            outcome.debug.attempts[1].error,
+            "rendered output carries a forbidden token: script"
+        );
+    }
+
+    #[test]
+    fn a_mixed_refusal_budget_exhausts_at_the_render_stage() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
+
+        // One Fill-stage refusal (Tera could not bind the template).
+        let retry = pipeline.apply(Event::Filled(Err("variable `missing` not found".into())));
+        assert!(matches!(retry.as_slice(), [Step::Render { .. }]));
+
+        // The clean re-render fills again, but its output carries a
+        // forbidden token: one Render-stage refusal.
+        let after_render = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        assert!(matches!(after_render.as_slice(), [Step::Fill { .. }]));
+
+        // Both kinds share `render_attempts`, so the budget is spent even
+        // though each stage was refused only once.
+        let done = pipeline.apply(Event::Filled(Ok("<a href=\"/x\">go</a>".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Failed {
+                stage: Stage::Render
+            }
+        );
+        assert_eq!(outcome.debug.attempts.len(), 2);
+        assert_eq!(outcome.debug.attempts[0].stage, Stage::Fill);
+        assert_eq!(outcome.debug.attempts[1].stage, Stage::Render);
     }
 
     #[test]

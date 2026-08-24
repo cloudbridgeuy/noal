@@ -28,6 +28,12 @@ use crate::session::SessionClaims;
 /// The cookie that carries the OAuth `state` across the sign-in round trip.
 pub const STATE_COOKIE_NAME: &str = "__Host-noal_oauth_state";
 
+/// The cookie that carries the post-sign-in destination across the round trip.
+///
+/// Short-lived like [`STATE_COOKIE_NAME`], and for the same reason: it only
+/// has to survive from the login redirect to the callback that follows it.
+pub const RETURN_COOKIE_NAME: &str = "__Host-noal_return";
+
 /// The WorkOS hosted authorization endpoint.
 pub const AUTHORIZE_ENDPOINT: &str = "https://api.workos.com/user_management/authorize";
 
@@ -144,6 +150,54 @@ impl Callback {
 
         Ok(code)
     }
+}
+
+/// Read the `next` query parameter off a raw `/auth/login` query string.
+///
+/// Reuses the same percent-decoding [`Callback::parse`] applies to `code` and
+/// `state`, so the shell never has to decode a query string itself. Returns
+/// `None` when there is no `next` parameter; the value is not validated here,
+/// only decoded — pass it through [`return_path`] before trusting it.
+#[must_use]
+pub fn next_param(query: &str) -> Option<String> {
+    for pair in query.trim_start_matches('?').split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        if key == "next" {
+            return Some(percent_decode(value));
+        }
+    }
+    None
+}
+
+/// Validate a post-sign-in redirect target.
+///
+/// Accepts a value only when it is rooted at the origin: it must start with
+/// exactly one `/`, must not be followed by a second `/` or a `\` (browsers
+/// treat `/\` the same as `//` when resolving a URL, so both make the value
+/// protocol-relative and both are refused), and must contain no `:` anywhere
+/// (which would turn it into an absolute URL with its own scheme, such as
+/// `https:x`). A `;` or any control character is refused too, because the
+/// accepted value is later written verbatim into a cookie value and a
+/// redirect header, where either could break out of the field it is placed
+/// in.
+///
+/// This is the whole defence against an open redirect through `/auth/login`:
+/// nothing else on the sign-in path checks where `next` points.
+#[must_use]
+pub fn return_path(raw: &str) -> Option<&str> {
+    let mut chars = raw.chars();
+    if chars.next() != Some('/') {
+        return None;
+    }
+    if matches!(chars.next(), Some('/') | Some('\\')) {
+        return None;
+    }
+    if raw.contains([':', ';']) || raw.chars().any(char::is_control) {
+        return None;
+    }
+    Some(raw)
 }
 
 /// The body noal posts to exchange a code for tokens.
@@ -305,8 +359,8 @@ fn percent_decode(value: &str) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        authorize_url, claims_from_tokens, percent_decode, percent_encode, AuthError, Callback,
-        TokenRequest, TokenResponse, WorkOsUser,
+        authorize_url, claims_from_tokens, next_param, percent_decode, percent_encode, return_path,
+        AuthError, Callback, TokenRequest, TokenResponse, WorkOsUser,
     };
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
@@ -467,5 +521,96 @@ mod tests {
     #[test]
     fn decoding_keeps_a_truncated_escape_as_written() {
         assert_eq!(percent_decode("abc%2"), "abc%2");
+    }
+
+    #[test]
+    fn next_param_reads_a_plain_value() {
+        assert_eq!(next_param("next=/health"), Some("/health".to_owned()));
+    }
+
+    #[test]
+    fn next_param_decodes_percent_escapes() {
+        assert_eq!(next_param("next=%2Fhealth"), Some("/health".to_owned()));
+    }
+
+    #[test]
+    fn next_param_ignores_other_parameters() {
+        assert_eq!(
+            next_param("utm=x&next=/health&extra"),
+            Some("/health".to_owned())
+        );
+    }
+
+    #[test]
+    fn next_param_is_absent_when_not_given() {
+        assert_eq!(next_param("code=abc&state=nonce"), None);
+    }
+
+    #[test]
+    fn next_param_is_absent_from_an_empty_query() {
+        assert_eq!(next_param(""), None);
+    }
+
+    /// The real `next` value the browser sends is percent-encoded and carries
+    /// a query string: `location.pathname + location.search` run through
+    /// `encodeURIComponent`. Pins that the decoded value keeps the `?` and
+    /// `=` characters rather than stopping at the first escape.
+    #[test]
+    fn next_param_decodes_a_percent_encoded_query_string() {
+        assert_eq!(
+            next_param("next=%2Fhealth%3Fx%3D1"),
+            Some("/health?x=1".to_owned())
+        );
+    }
+
+    /// The browser-side caller always percent-encodes `next`, so a raw `&`
+    /// inside the value never reaches this function in practice. Pinned
+    /// anyway: `next_param` splits the whole query on `&` before it looks at
+    /// `=`, so an unescaped `&` inside the value is read as the start of the
+    /// *next* parameter, not as part of this one. The tail after it (`y=2`)
+    /// is discarded, not appended.
+    #[test]
+    fn next_param_truncates_an_unencoded_ampersand() {
+        assert_eq!(
+            next_param("next=/health?x=1&y=2"),
+            Some("/health?x=1".to_owned())
+        );
+    }
+
+    /// `return_path` is the whole defence against an open redirect, so every
+    /// case in the security rule gets a row here rather than a handful of
+    /// spot checks.
+    #[test]
+    fn return_path_table() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("/health", Some("/health")),
+            ("/", Some("/")),
+            ("", None),
+            ("health", None),
+            ("//evil.com", None),
+            (r"/\evil.com", None),
+            ("https:x", None),
+            ("http://evil.com", None),
+            ("/evil.com:8080/path", None),
+            ("/a;Domain=evil.com", None),
+            ("/a\r\nSet-Cookie:x=y", None),
+            ("/a\nb", None),
+            ("/a\tb", None),
+            // The everyday shape: the browser builds `next` from
+            // `location.pathname + location.search`, so a query string is
+            // the common case, not an edge case.
+            ("/health?x=1", Some("/health?x=1")),
+            ("/w/7?tab=a&sort=b", Some("/w/7?tab=a&sort=b")),
+            // A fragment never leaves the browser as part of the request
+            // that follows the redirect, so accepting it here is harmless:
+            // it is still rooted at the origin, carries no scheme, and
+            // contains no character the cookie or `Location` header would
+            // choke on.
+            ("/health#top", Some("/health#top")),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(return_path(raw), *expected, "case: {raw:?}");
+        }
     }
 }
