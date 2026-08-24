@@ -9,10 +9,18 @@ use noal_core::ask::outcome::{Outcome, Stage, Verdict};
 
 /// The form that starts an ask. Submitting it replaces `#ask-result`, wherever
 /// on the page that lives, leaving the form itself in place.
+///
+/// `hx-sync="this:drop"` drops a second submit made while the first is still
+/// in flight, rather than queuing or replacing it — this is what stops a
+/// second Enter press from firing another request. `hx-disabled-elt="find
+/// button"` disables the submit button for the same span, as the visible
+/// sign that an ask is already running; the input is left out on purpose so
+/// the user can keep editing their request while it runs.
 #[must_use]
 pub fn form() -> Markup {
     html! {
-        form #ask-form hx-post="/ask" hx-target="#ask-result" hx-swap="outerHTML" hx-indicator="#ask-busy" {
+        form #ask-form hx-post="/ask" hx-target="#ask-result" hx-swap="outerHTML" hx-indicator="#ask-busy"
+            hx-sync="this:drop" hx-disabled-elt="find button" {
             label for="ask-input" { "What do you want to see?" }
             input #ask-input name="request" type="text" required autofocus
                 placeholder="open tasks under the Render MVP epic, with comments";
@@ -87,6 +95,24 @@ mod tests {
         assert!(html.contains("hx-target=\"#ask-result\""));
         assert!(html.contains("hx-swap=\"outerHTML\""));
         assert!(html.contains("name=\"request\""));
+    }
+
+    #[test]
+    fn the_form_drops_a_second_submit_and_disables_only_the_button() {
+        let html = form().into_string();
+        assert!(html.contains("hx-sync=\"this:drop\""));
+        assert!(html.contains("hx-disabled-elt=\"find button\""));
+
+        // The input must stay out of hx-disabled-elt's reach so the user can
+        // keep editing their request while the first ask is in flight.
+        match html.find("<input").and_then(|start| {
+            html[start..]
+                .find('>')
+                .map(|end| &html[start..=start + end])
+        }) {
+            Some(input_tag) => assert!(!input_tag.contains("disabled")),
+            None => panic!("form renders an input"),
+        }
     }
 
     #[test]
