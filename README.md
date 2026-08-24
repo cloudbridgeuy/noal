@@ -18,7 +18,7 @@ rules and nothing else; that is the seam where the application goes.
 | `crates/core`  | native                  | Pure rules. No I/O, no clock, no randomness.  |
 | `crates/view`  | native                  | `maud` templates. Data in, markup out.        |
 | `crates/worker`| `wasm32-unknown-unknown`| The shell: axum, Postgres, WorkOS, the clock. |
-| `xtask`        | native                  | The lint gate and the migration runner.       |
+| `xtask`        | native                  | The lint gate, the dev launcher, and the migration runner. |
 
 The core and the views compile natively, so `cargo test` runs them without the
 Wasm toolchain. Only the shell needs the Workers target.
@@ -29,15 +29,16 @@ That split is a rule, not a habit. See
 ## Requirements
 
 - Rust 1.95.0 (pinned in `rust-toolchain.toml`, with the Wasm target)
-- Node, for `wrangler`
-- `worker-build`: `cargo install worker-build`
+- Node, for `pnpm` and `wrangler`
+
+Everything else — pnpm itself, the Node dependencies, the Wasm target,
+`worker-build` — is installed by `cargo xtask dev` when it is missing.
 
 ## Run it
 
 ```sh
-npm install
 cp .dev.vars.example .dev.vars   # then fill it in
-npm run dev
+cargo xtask dev
 ```
 
 `.dev.vars` needs a session key, a WorkOS client ID and API key, and a Postgres
@@ -46,6 +47,14 @@ URL. The example file explains each one and how to generate the key.
 `wrangler dev` connects straight to the Postgres URL in
 `WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB`, so a local run needs no
 Cloudflare resource. A deploy needs a real Hyperdrive `id` in `wrangler.jsonc`.
+
+Extra arguments reach wrangler verbatim:
+
+```sh
+cargo xtask dev -- --port 9000
+```
+
+To deploy, run `pnpm exec wrangler deploy`.
 
 ## Routes
 

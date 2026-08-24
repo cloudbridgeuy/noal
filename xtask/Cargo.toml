@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Repository automation for noal: the lint gate and the migration runner."
+description = "Repository automation for noal: the lint gate, the dev launcher, and the migration runner."
 
 [dependencies]
 chrono.workspace = true

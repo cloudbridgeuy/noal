@@ -5,13 +5,15 @@
 //!
 //! `lint` runs every quality check in order and manages the Git pre-commit
 //! hook. `migrate` applies the SQL files under `migrations/` to a Postgres
-//! database.
+//! database. `dev` fills in whatever the local environment lacks — pnpm, Node
+//! dependencies, the Wasm target, worker-build — and then starts wrangler.
 //!
 //! This crate builds for the host, never for Wasm. It is the only place in the
 //! repository that may talk to a database over a normal TCP socket, because
 //! `noal_worker` reaches Neon through a Cloudflare Socket instead.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
+mod dev;
 mod lint;
 mod migrate;
 
@@ -31,6 +33,9 @@ enum Commands {
     /// `#[allow(clippy::too_many_arguments)]` ban
     Lint(lint::LintArgs),
 
+    /// Install anything the local environment lacks, then start `wrangler dev`
+    Dev(dev::DevArgs),
+
     /// Apply pending SQL migrations to a Postgres database
     Migrate(migrate::MigrateArgs),
 }
@@ -41,6 +46,7 @@ fn main() -> Result<()> {
 
     match app.command {
         Commands::Lint(args) => lint::run(&args),
+        Commands::Dev(args) => dev::run(&args),
         Commands::Migrate(args) => migrate::run(&args),
     }
 }

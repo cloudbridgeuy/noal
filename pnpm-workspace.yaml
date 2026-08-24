@@ -1,0 +1,6 @@
+# Package-manager settings. This project has one package; the file exists
+# because pnpm reads build-script approvals from here, not from package.json.
+# esbuild and workerd both need their postinstall script to place a binary.
+allowBuilds:
+  esbuild: true
+  workerd: true
