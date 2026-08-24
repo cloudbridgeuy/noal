@@ -81,13 +81,16 @@ fn render_body(outcome: &Outcome) -> String {
 /// `#ask-result` entirely, appending the toast to `#toasts` instead.
 ///
 /// An answered outcome also carries `HX-Trigger: noal:answered`. This is the
-/// response header htmx defines, not the request header of the same name —
-/// the two are unrelated and only the response one belongs here. htmx fires
-/// the named event on the element that made the request — `#ask-form` —
-/// once the swap lands, and the event bubbles to `document`, which is where
-/// the palette's script listens for it to close the palette and clear its
-/// input. A refused stage sends no such header, so its absence is the whole
-/// mechanism that keeps a refused palette open with the typed text intact.
+/// response header htmx defines, not the request header of the same name — the
+/// two are unrelated and only the response one belongs here. htmx fires the
+/// named event on the element that made the request — `#ask-form` — as soon as
+/// the response arrives, before the swap runs, and the event bubbles to
+/// `document`, which is where the palette's script listens for it to close the
+/// palette and clear its input. That ordering is harmless here since the swap
+/// lands in `#ask-result`, outside `#palette`, so closing the palette early
+/// cannot disturb it. A refused stage sends no such header, so its absence is
+/// the whole mechanism that keeps a refused palette open with the typed text
+/// intact.
 fn render_outcome(outcome: &Outcome) -> Response {
     let body = render_body(outcome);
     match outcome.verdict {
