@@ -5,9 +5,10 @@
 //! command that needs local settings comes here.
 //!
 //! The top half is a functional core: turning the file's text into key–value
-//! pairs, and deciding what is missing, are pure functions over string
-//! contents, so they are unit tested without touching a disk. The bottom half
-//! is the shell: locating and reading the file.
+//! pairs, deciding what is missing, judging the Hyperdrive URL's shape, and
+//! merging the entries over a process environment are all pure functions over
+//! injected values, so they are unit tested without touching a disk. The
+//! bottom half is the shell: locating and reading the file.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -150,6 +151,102 @@ fn filled(vars: &BTreeMap<String, String>, name: &str) -> bool {
     filled_value(vars, name).is_some()
 }
 
+/// Merge the process environment with `.dev.vars` defaults.
+///
+/// The result is the process environment with one entry added per parsed
+/// file variable — except where the process already exports a variable of
+/// the same name, because an explicit shell export should beat a file
+/// default, matching standard dotenv precedence.
+#[must_use]
+pub fn overlay(
+    process: &BTreeMap<String, String>,
+    file_vars: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut merged = process.clone();
+    for (name, value) in file_vars {
+        merged.entry(name.clone()).or_insert_with(|| value.clone());
+    }
+    merged
+}
+
+/// Why a Hyperdrive connection string cannot serve a local run.
+///
+/// Each variant can say plainly what to type instead. No variant ever
+/// carries the offending value, because it may hold secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlProblem {
+    /// The value has no `scheme://…` shape at all.
+    NotAUrl,
+    /// The scheme names something other than Postgres.
+    WrongScheme(String),
+    /// Nothing sits between the credentials and the path.
+    MissingHost,
+    /// The password component is missing or empty.
+    MissingPassword,
+}
+
+/// The shape wrangler 4 insists on, which trust-auth Postgres does not.
+const URL_SHAPE: &str = "postgres://user:anything@host:port/db";
+
+impl std::fmt::Display for UrlProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAUrl => write!(
+                f,
+                "the connection string is not a URL; use the shape `{URL_SHAPE}`"
+            ),
+            Self::WrongScheme(scheme) => write!(
+                f,
+                "`{scheme}` is not a Postgres scheme; use the shape `{URL_SHAPE}`"
+            ),
+            Self::MissingHost => write!(
+                f,
+                "the connection string has no host; use the shape `{URL_SHAPE}`"
+            ),
+            Self::MissingPassword => write!(
+                f,
+                "the connection string has no password. Local Postgres under \
+                 trust auth ignores it, but wrangler 4 requires the format, \
+                 so use the shape `{URL_SHAPE}`"
+            ),
+        }
+    }
+}
+
+/// Judge whether a connection string can serve as the local Hyperdrive URL.
+///
+/// Wrangler 4 reads this string from its environment and refuses to start
+/// unless it parses as a Postgres URL with a host and a non-empty password —
+/// even though local Postgres under trust auth never checks the password.
+/// `Some` means preflight must stop; `None` means go.
+#[must_use]
+pub fn hyperdrive_url_problem(url: &str) -> Option<UrlProblem> {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Some(UrlProblem::NotAUrl);
+    };
+    if !matches!(scheme, "postgres" | "postgresql") {
+        return Some(UrlProblem::WrongScheme(scheme.to_owned()));
+    }
+
+    // The authority ends where the path, query, or fragment begins.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // A raw `@` may sit inside a password, so the last one separates
+    // credentials from host.
+    let (userinfo, host) = authority.rsplit_once('@').unwrap_or(("", authority));
+
+    if host.is_empty() || host.starts_with(':') {
+        return Some(UrlProblem::MissingHost);
+    }
+
+    let holds_a_password =
+        matches!(userinfo.split_once(':'), Some((_, password)) if !password.is_empty());
+    if holds_a_password {
+        None
+    } else {
+        Some(UrlProblem::MissingPassword)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Imperative shell — filesystem effects
 // ---------------------------------------------------------------------------
@@ -175,8 +272,8 @@ pub fn read(root: &Path) -> std::io::Result<String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
-        database_url, gaps, parse, DatabaseUrl, Gap, HYPERDRIVE_NAME, LEGACY_HYPERDRIVE_NAME,
-        REQUIRED,
+        database_url, gaps, hyperdrive_url_problem, overlay, parse, DatabaseUrl, Gap,
+        HYPERDRIVE_NAME, LEGACY_HYPERDRIVE_NAME, REQUIRED,
     };
     use std::collections::BTreeMap;
 
@@ -367,5 +464,137 @@ mod tests {
     fn an_empty_connection_string_counts_as_absent() {
         let hollow = vars(&[(HYPERDRIVE_NAME, "")]);
         assert_eq!(database_url(&hollow), DatabaseUrl::Absent);
+    }
+
+    #[test]
+    fn the_file_fills_names_the_process_does_not_export() {
+        let process = vars(&[("PATH", "/bin")]);
+        let file = vars(&[("SESSION_KEY", "from-file")]);
+        let merged = overlay(&process, &file);
+        assert_eq!(merged.get("SESSION_KEY").unwrap(), "from-file");
+        assert_eq!(merged.get("PATH").unwrap(), "/bin");
+    }
+
+    #[test]
+    fn an_explicit_shell_export_beats_the_file_default() {
+        let process = vars(&[("SESSION_KEY", "from-shell")]);
+        let file = vars(&[("SESSION_KEY", "from-file")]);
+        assert_eq!(
+            overlay(&process, &file).get("SESSION_KEY").unwrap(),
+            "from-shell"
+        );
+    }
+
+    #[test]
+    fn an_empty_file_leaves_the_process_environment_alone() {
+        let process = vars(&[("PATH", "/bin"), ("HOME", "/home/u")]);
+        assert_eq!(overlay(&process, &vars(&[])), process);
+    }
+
+    #[test]
+    fn every_file_entry_lands_when_nothing_is_exported() {
+        let file = vars(&[("A", "1"), ("B", "2")]);
+        let merged = overlay(&vars(&[]), &file);
+        assert_eq!(merged, file);
+    }
+
+    #[test]
+    fn a_credentialed_postgres_url_is_accepted() {
+        assert_eq!(
+            hyperdrive_url_problem("postgres://user:anything@localhost:5432/noal"),
+            None
+        );
+        assert_eq!(
+            hyperdrive_url_problem(
+                "postgresql://user:secret@db.internal:5432/noal?sslmode=disable"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_missing_password_component_is_rejected() {
+        assert_eq!(
+            hyperdrive_url_problem("postgres://user@localhost:5432/noal"),
+            Some(super::UrlProblem::MissingPassword)
+        );
+    }
+
+    #[test]
+    fn a_user_with_no_password_at_all_is_rejected() {
+        assert_eq!(
+            hyperdrive_url_problem("postgres://localhost:5432/noal"),
+            Some(super::UrlProblem::MissingPassword)
+        );
+    }
+
+    #[test]
+    fn an_empty_password_component_is_rejected() {
+        assert_eq!(
+            hyperdrive_url_problem("postgres://user:@localhost:5432/noal"),
+            Some(super::UrlProblem::MissingPassword)
+        );
+    }
+
+    #[test]
+    fn a_wrong_scheme_is_rejected_and_named() {
+        assert_eq!(
+            hyperdrive_url_problem("mysql://user:pass@localhost/db"),
+            Some(super::UrlProblem::WrongScheme("mysql".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_value_without_a_scheme_separator_is_rejected() {
+        assert_eq!(
+            hyperdrive_url_problem("localhost:5432/noal"),
+            Some(super::UrlProblem::NotAUrl)
+        );
+    }
+
+    #[test]
+    fn a_missing_host_is_rejected() {
+        assert_eq!(
+            hyperdrive_url_problem("postgres://user:pass@/noal"),
+            Some(super::UrlProblem::MissingHost)
+        );
+        assert_eq!(
+            hyperdrive_url_problem("postgres://user:pass@:5433/noal"),
+            Some(super::UrlProblem::MissingHost)
+        );
+    }
+
+    #[test]
+    fn an_at_sign_inside_the_password_still_finds_the_host() {
+        assert_eq!(
+            hyperdrive_url_problem("postgres://user:p@ssword@localhost:5432/noal"),
+            None
+        );
+    }
+
+    #[test]
+    fn url_problem_messages_suggest_the_shape_but_never_echo_the_value() {
+        let secret = "super-secret-password";
+        // Missing host, so this produces a real problem carrying the secret.
+        let leaky = format!("postgres://admin:{secret}@");
+        let judged = hyperdrive_url_problem(&leaky);
+        assert_ne!(judged, None);
+        for problem in [
+            super::UrlProblem::NotAUrl,
+            super::UrlProblem::WrongScheme("mysql".to_owned()),
+            super::UrlProblem::MissingHost,
+            super::UrlProblem::MissingPassword,
+        ]
+        .into_iter()
+        .chain(judged)
+        {
+            let message = problem.to_string();
+            assert!(!message.contains(leaky.as_str()), "value leaked: {message}");
+            assert!(!message.contains(secret), "password leaked: {message}");
+            assert!(
+                message.contains("postgres://user:anything@host:port/db"),
+                "message lacks the suggested shape: {message}"
+            );
+        }
     }
 }
