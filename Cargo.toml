@@ -96,7 +96,7 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # Declaring it here turns the feature on. On a native target the feature is
 # inert, because getrandom gates its JS bindings on the wasm32 target.
 getrandom_legacy = { package = "getrandom", version = "0.2", features = ["js"] }
-base64 = "0.22"
+base64 = "0.23"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
