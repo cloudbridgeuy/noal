@@ -34,6 +34,26 @@ pub enum Saved {
     No,
 }
 
+/// The part of a result that shows the outcome itself: the filled page for
+/// an answer, the plain refusal line for a failure.
+///
+/// The window page reuses this so reopening renders exactly what asking
+/// rendered. What differs between asking and reopening — the retry form and
+/// the save toast — is left to the callers.
+#[must_use]
+pub fn outcome_view(outcome: &Outcome) -> Markup {
+    html! {
+        @match &outcome.verdict {
+            Verdict::Answered { html } => {
+                div .ask-answer { (PreEscaped(html)) }
+            }
+            Verdict::Failed { stage } => {
+                p .ask-failed { (failure_text(*stage)) }
+            }
+        }
+    }
+}
+
 /// The answer fragment: the request, the result or a failure, and the debug
 /// payload a later overlay reads.
 ///
@@ -46,15 +66,14 @@ pub fn answer(outcome: &Outcome, saved: Saved) -> Markup {
     html! {
         section #ask-result {
             h2 { (outcome.request) }
+            (outcome_view(outcome))
             @match &outcome.verdict {
-                Verdict::Answered { html } => {
-                    div .ask-answer { (PreEscaped(html)) }
+                Verdict::Answered { .. } => {
                     @if saved == Saved::No {
                         p #ask-toast role="status" { "The window was not saved." }
                     }
                 }
-                Verdict::Failed { stage } => {
-                    p .ask-failed { (failure_text(*stage)) }
+                Verdict::Failed { .. } => {
                     (form())
                 }
             }
@@ -75,13 +94,14 @@ const fn failure_text(stage: Stage) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, form, Saved};
-    use noal_core::ask::outcome::{Debug, Outcome, Stage, Verdict};
+    use super::{answer, form, outcome_view, Saved};
+    use noal_core::ask::outcome::{Debug, Origin, Outcome, Stage, Verdict};
 
     fn outcome(verdict: Verdict) -> Outcome {
         Outcome {
             request: "open tasks".into(),
             verdict,
+            origin: Origin::Asked,
             debug: Debug::default(),
         }
     }
@@ -155,5 +175,25 @@ mod tests {
         o.request = "<img src=x>".into();
         let html = answer(&o, Saved::Yes).into_string();
         assert!(html.contains("<h2>&lt;img src=x&gt;</h2>"));
+    }
+
+    #[test]
+    fn the_outcome_view_shows_the_filled_page_verbatim() {
+        let html = outcome_view(&outcome(Verdict::Answered {
+            html: "<ul><li>a</li></ul>".into(),
+        }))
+        .into_string();
+        assert!(html.contains("<div class=\"ask-answer\"><ul><li>a</li></ul></div>"));
+        assert!(!html.contains("hx-post"), "no retry form on an answer");
+    }
+
+    #[test]
+    fn the_outcome_view_shows_a_plain_refusal_line_for_a_failure() {
+        let html = outcome_view(&outcome(Verdict::Failed { stage: Stage::Fill })).into_string();
+        assert!(html.contains("could not fill its view"));
+        assert!(
+            !html.contains("hx-post"),
+            "the retry form belongs to the caller"
+        );
     }
 }

@@ -45,6 +45,13 @@ pub enum Failure {
     /// The route asked for a signed-in user and there was none.
     #[error("not signed in")]
     NotSignedIn,
+
+    /// No saved window answers this address. Unknown id, another user's id,
+    /// and a malformed segment all land here on purpose: from outside, the
+    /// three are indistinguishable, so an address reveals nothing about
+    /// which windows exist or whose they are.
+    #[error("no such window")]
+    NoSuchWindow,
 }
 
 impl Failure {
@@ -70,6 +77,7 @@ impl Failure {
             Self::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Database(_) | Self::Upstream(_) | Self::Model(_) => StatusCode::BAD_GATEWAY,
             Self::Auth(_) => StatusCode::BAD_REQUEST,
+            Self::NoSuchWindow => StatusCode::NOT_FOUND,
             Self::Session(_) | Self::NotSignedIn => StatusCode::UNAUTHORIZED,
         }
     }
@@ -87,6 +95,7 @@ impl Failure {
             Self::Upstream(_) => "A service noal depends on did not answer.",
             Self::Model(_) => "The model did not answer.",
             Self::Auth(_) => "That sign-in could not be completed.",
+            Self::NoSuchWindow => "There is no window at this address.",
             Self::Session(_) | Self::NotSignedIn => "Please sign in.",
         }
     }

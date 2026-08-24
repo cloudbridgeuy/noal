@@ -116,3 +116,26 @@ have, which is what stops an old deploy from migrating a newer database.
 The split is enforced by the target, not by discipline: `noal_core` cannot call
 `worker::` because `worker` is not one of its dependencies, and it never will
 be. That makes the boundary structural.
+
+---
+
+## A window URL answers with a full document, not a fragment
+
+**Chosen over** content negotiation on the `HX-Request` header, which would
+let `GET /w/:id` return a bare fragment when htmx asked and a document
+otherwise.
+
+Dated 2026-08-24. A saved window is reachable three ways that must behave
+alike: clicking its link in the tree, following the URL htmx pushed after the
+ask, and reloading the page later. All three land on the same complete page —
+chrome, palette, answer, debug payload — rendered by one function through
+`layout::page`. A second rendering path for "inside htmx" would be a second
+template family to keep in step, which the maud-and-htmx decision above
+bans; htmx navigates to a full document perfectly well on its own.
+
+The same page load is also where reopening happens: the server runs the
+window's stored query through its stored template before rendering, so the
+document always arrives filled and current (`Cache-Control: no-store`,
+`hx-history="false"`), never from a cache or a snapshot. Reopening calls no
+model — the stored plan and template are used as-is, and if Postgres refuses
+the query the ask ends rather than retrying with the model's help.
