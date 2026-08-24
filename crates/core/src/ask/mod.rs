@@ -8,6 +8,7 @@ pub mod outcome;
 pub mod pipeline;
 pub mod plan;
 pub mod prompt;
+pub mod validator;
 
 /// The schema description every plan prompt carries.
 pub const CATALOG: &str = include_str!("catalog.md");
