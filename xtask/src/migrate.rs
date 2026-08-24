@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 use color_eyre::eyre::{eyre, Result, WrapErr};
 
+use crate::dev_vars;
+
 /// Where migration files live, relative to the workspace root.
 const MIGRATIONS_DIR: &str = "migrations";
 
@@ -148,9 +150,11 @@ pub fn orphaned(all: &[Migration], applied: &BTreeSet<i64>) -> Vec<i64> {
 /// Command line for `cargo xtask migrate`.
 #[derive(Args)]
 pub struct MigrateArgs {
-    /// Postgres connection string. Defaults to the `DATABASE_URL` variable.
-    #[arg(long, env = "DATABASE_URL")]
-    pub database_url: String,
+    /// Postgres connection string. When absent, the
+    /// `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB` variable from
+    /// `.dev.vars` is used, so one file holds every local setting.
+    #[arg(long)]
+    pub database_url: Option<String>,
 
     /// Report what would run, then stop without changing anything
     #[arg(long)]
@@ -165,6 +169,8 @@ pub struct MigrateArgs {
 /// malformed, the database refuses a connection, or a migration fails. A failed
 /// migration rolls back with its ledger row.
 pub fn run(args: &MigrateArgs) -> Result<()> {
+    let database_url = resolve_database_url(&args.database_url)?;
+
     let directory = migrations_dir();
     let stems = read_migration_stems(&directory)?;
     let all = parse_all(&stems).map_err(|error| eyre!("{error}"))?;
@@ -179,7 +185,64 @@ pub fn run(args: &MigrateArgs) -> Result<()> {
         .build()
         .wrap_err("could not start the async runtime")?;
 
-    runtime.block_on(apply(args, &directory, &all))
+    runtime.block_on(apply(&database_url, &directory, &all, args.dry_run))
+}
+
+/// Decide where to connect.
+///
+/// An explicit flag wins over everything. Without one, the connection string
+/// comes from `.dev.vars` — the same file wrangler reads — under its current
+/// name, with the pre-wrangler-4 name accepted as a fallback so an unrenamed
+/// file still works. Values are never printed; they are secrets.
+///
+/// # Errors
+///
+/// Returns an error when no flag was given and `.dev.vars` is missing,
+/// unreadable, or holds no usable connection string; the message names the
+/// file and the variables it looked for.
+fn resolve_database_url(explicit: &Option<String>) -> Result<String> {
+    if let Some(url) = explicit {
+        return Ok(url.clone());
+    }
+
+    let root = std::env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| ".".to_owned());
+    let file = dev_vars::path(Path::new(&root));
+
+    let contents = match dev_vars::read(Path::new(&root)) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(eyre!(
+                "no --database-url was given and {} does not exist. \
+                 Either pass --database-url, or set {VAR} there \
+                 (copy .dev.vars.example to create it)",
+                file.display(),
+                VAR = dev_vars::HYPERDRIVE_NAME
+            ));
+        }
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("could not read {}", file.display()));
+        }
+    };
+
+    match dev_vars::database_url(&dev_vars::parse(&contents)) {
+        dev_vars::DatabaseUrl::Current(url) => Ok(url),
+        dev_vars::DatabaseUrl::Legacy(url) => {
+            eprintln!(
+                "note: taking the connection string from {}, which is the legacy variable name; \
+                 rename it to {}",
+                dev_vars::LEGACY_HYPERDRIVE_NAME,
+                dev_vars::HYPERDRIVE_NAME
+            );
+            Ok(url)
+        }
+        dev_vars::DatabaseUrl::Absent => Err(eyre!(
+            "no --database-url was given and neither {current} nor its legacy spelling \
+             {legacy} holds a value in {}. Either pass --database-url, or fill in {current}",
+            file.display(),
+            current = dev_vars::HYPERDRIVE_NAME,
+            legacy = dev_vars::LEGACY_HYPERDRIVE_NAME
+        )),
+    }
 }
 
 /// The absolute path to the migrations directory.
@@ -209,12 +272,17 @@ fn read_migration_stems(directory: &Path) -> Result<Vec<String>> {
 }
 
 /// Connect, compare the ledger with the files, and run what is pending.
-async fn apply(args: &MigrateArgs, directory: &Path, all: &[Migration]) -> Result<()> {
+async fn apply(
+    database_url: &str,
+    directory: &Path,
+    all: &[Migration],
+    dry_run: bool,
+) -> Result<()> {
     let connector = postgres_native_tls::MakeTlsConnector::new(
         native_tls::TlsConnector::new().wrap_err("could not build a TLS connector")?,
     );
 
-    let (mut client, connection) = tokio_postgres_native::connect(&args.database_url, connector)
+    let (mut client, connection) = tokio_postgres_native::connect(database_url, connector)
         .await
         .wrap_err("could not connect to the database")?;
 
@@ -261,7 +329,7 @@ async fn apply(args: &MigrateArgs, directory: &Path, all: &[Migration]) -> Resul
         );
     }
 
-    if args.dry_run {
+    if dry_run {
         println!("\nDry run. Nothing was applied.");
         return Ok(());
     }
