@@ -79,10 +79,29 @@ fn render_body(outcome: &Outcome) -> String {
 /// path instead of the error path, and it is what leaves the previous answer
 /// on screen, since `HX-Retarget`/`HX-Reswap` steer the swap away from
 /// `#ask-result` entirely, appending the toast to `#toasts` instead.
+///
+/// An answered outcome also carries `HX-Trigger: noal:answered`. This is the
+/// response header htmx defines, not the request header of the same name — the
+/// two are unrelated and only the response one belongs here. htmx fires the
+/// named event on the element that made the request — `#ask-form` — as soon as
+/// the response arrives, before the swap runs, and the event bubbles to
+/// `document`, which is where the palette's script listens for it to close the
+/// palette and clear its input. That ordering is harmless here since the swap
+/// lands in `#ask-result`, outside `#palette`, so closing the palette early
+/// cannot disturb it. A refused stage sends no such header, so its absence is
+/// the whole mechanism that keeps a refused palette open with the typed text
+/// intact.
 fn render_outcome(outcome: &Outcome) -> Response {
     let body = render_body(outcome);
     match outcome.verdict {
-        Verdict::Answered { .. } => Html(body).into_response(),
+        Verdict::Answered { .. } => {
+            let mut response = Html(body).into_response();
+            response.headers_mut().insert(
+                HeaderName::from_static("hx-trigger"),
+                HeaderValue::from_static("noal:answered"),
+            );
+            response
+        }
         Verdict::Failed { .. } => {
             let mut response = Html(body).into_response();
             let headers = response.headers_mut();
@@ -314,10 +333,27 @@ mod tests {
     }
 
     #[test]
+    fn an_answered_response_fires_the_answered_trigger() {
+        let response = render_outcome(&outcome(Verdict::Answered {
+            html: String::new(),
+        }));
+        assert_eq!(
+            response.headers().get("hx-trigger").unwrap(),
+            "noal:answered"
+        );
+    }
+
+    #[test]
     fn a_refused_response_retargets_the_swap_to_toasts_and_still_answers_200() {
         let response = render_outcome(&outcome(Verdict::Failed { stage: Stage::Plan }));
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get("hx-retarget").unwrap(), "#toasts");
         assert_eq!(response.headers().get("hx-reswap").unwrap(), "beforeend");
+    }
+
+    #[test]
+    fn a_refused_response_sends_no_answered_trigger() {
+        let response = render_outcome(&outcome(Verdict::Failed { stage: Stage::Plan }));
+        assert!(!response.headers().contains_key("hx-trigger"));
     }
 }
