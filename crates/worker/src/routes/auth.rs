@@ -17,8 +17,8 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use noal_core::auth::{
-    authorize_url, claims_from_tokens, AuthError, Callback, TokenRequest, TokenResponse,
-    REVOKE_ENDPOINT, STATE_COOKIE_NAME, TOKEN_ENDPOINT,
+    authorize_url, claims_from_tokens, next_param, return_path, AuthError, Callback, TokenRequest,
+    TokenResponse, RETURN_COOKIE_NAME, REVOKE_ENDPOINT, STATE_COOKIE_NAME, TOKEN_ENDPOINT,
 };
 use noal_core::cookie;
 use noal_core::session::{seal, COOKIE_NAME};
@@ -39,10 +39,15 @@ use crate::state::AppState;
 /// the two match, which is what stops a third party from replaying a callback
 /// into someone else's browser.
 ///
+/// A `?next=` query parameter, when present and rooted at this origin, is
+/// kept in its own short-lived cookie so the callback can send the browser
+/// back there. It never travels to WorkOS: not in the authorize URL, not in
+/// `state`, not in the redirect URI.
+///
 /// # Errors
 ///
 /// Returns [`Failure::Upstream`] when the host refuses entropy.
-pub async fn login(State(state): State<AppState>) -> Result<Response, Failure> {
+pub async fn login(State(state): State<AppState>, uri: Uri) -> Result<Response, Failure> {
     let token = entropy::state_token()?;
 
     let destination = authorize_url(
@@ -52,8 +57,18 @@ pub async fn login(State(state): State<AppState>) -> Result<Response, Failure> {
     );
 
     let set_cookie = cookie::write_for(STATE_COOKIE_NAME, &token, cookie::BRIEF_MAX_AGE_SECONDS);
+    let mut response_headers = cookie_header(&set_cookie)?;
 
-    Ok((cookie_header(&set_cookie)?, Redirect::to(&destination)).into_response())
+    // An absent or refused `next` writes no cookie at all — not an empty
+    // one, not one holding `/`. There is simply nothing to return to.
+    if let Some(next) = return_target(uri.query().unwrap_or_default()) {
+        append_cookie(
+            &mut response_headers,
+            &cookie::write_for(RETURN_COOKIE_NAME, &next, cookie::BRIEF_MAX_AGE_SECONDS),
+        )?;
+    }
+
+    Ok((response_headers, Redirect::to(&destination)).into_response())
 }
 
 /// Finish a sign-in.
@@ -98,10 +113,16 @@ pub async fn callback(
     let claims = claims_from_tokens(&tokens)?;
     let sealed = seal(&state.config().session_key, entropy::nonce()?, &claims)?;
 
+    // The cookie holds a value noal itself wrote, but it is validated again
+    // anyway: that is what stops a redirect off-origin even if the cookie
+    // somehow ended up holding something else.
+    let destination = return_destination(&headers);
+
     let mut response_headers = cookie_header(&cookie::write(COOKIE_NAME, &sealed))?;
     append_cookie(&mut response_headers, &cookie::clear(STATE_COOKIE_NAME))?;
+    append_cookie(&mut response_headers, &cookie::clear(RETURN_COOKIE_NAME))?;
 
-    Ok((response_headers, Redirect::to("/")).into_response())
+    Ok((response_headers, Redirect::to(destination)).into_response())
 }
 
 /// Sign out here, and everywhere.
@@ -217,4 +238,111 @@ fn append_cookie(headers: &mut HeaderMap, value: &str) -> Result<(), Failure> {
     let value = HeaderValue::from_str(value).map_err(Failure::upstream)?;
     headers.append(header::SET_COOKIE, value);
     Ok(())
+}
+
+/// The value to store in the return cookie, if `query` names a safe one.
+///
+/// `None` for a missing `?next=` and for one [`return_path`] refuses; either
+/// way, [`login`] then writes no cookie at all.
+fn return_target(query: &str) -> Option<String> {
+    next_param(query)
+        .as_deref()
+        .and_then(return_path)
+        .map(str::to_owned)
+}
+
+/// Where [`callback`] should send the browser once the sign-in is done.
+///
+/// Reads the return cookie straight from the request headers and validates
+/// it with [`return_path`] a second time, so a cookie that somehow held
+/// something other than what [`login`] wrote still cannot send the browser
+/// off-origin. Falls back to `/`.
+fn return_destination(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|header| cookie::read(header, RETURN_COOKIE_NAME))
+        .and_then(return_path)
+        .unwrap_or("/")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use axum::http::{header, HeaderMap, HeaderValue};
+    use noal_core::auth::RETURN_COOKIE_NAME;
+    use noal_core::cookie;
+
+    use super::{return_destination, return_target};
+
+    fn headers_with_cookie(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    #[test]
+    fn return_target_keeps_a_safe_next() {
+        assert_eq!(return_target("next=/health"), Some("/health".to_owned()));
+    }
+
+    #[test]
+    fn return_target_decodes_a_percent_encoded_next() {
+        assert_eq!(return_target("next=%2Fhealth"), Some("/health".to_owned()));
+    }
+
+    #[test]
+    fn return_target_is_none_when_next_is_absent() {
+        assert_eq!(return_target(""), None);
+    }
+
+    #[test]
+    fn return_target_refuses_a_protocol_relative_next() {
+        assert_eq!(return_target("next=//evil.com"), None);
+    }
+
+    #[test]
+    fn return_target_refuses_a_scheme() {
+        assert_eq!(return_target("next=https:x"), None);
+    }
+
+    #[test]
+    fn return_destination_reads_a_safe_cookie() {
+        let set_cookie =
+            cookie::write_for(RETURN_COOKIE_NAME, "/health", cookie::BRIEF_MAX_AGE_SECONDS);
+        // A `Set-Cookie` value starts the same way a `Cookie` request header
+        // pair does; only the trailing attributes differ, and `cookie::read`
+        // stops at the first `;` anyway.
+        let headers = headers_with_cookie(&set_cookie);
+        assert_eq!(return_destination(&headers), "/health");
+    }
+
+    #[test]
+    fn return_destination_falls_back_when_the_cookie_is_absent() {
+        assert_eq!(return_destination(&HeaderMap::new()), "/");
+    }
+
+    #[test]
+    fn return_destination_falls_back_when_the_cookie_holds_a_refused_value() {
+        // Defence in depth: even a cookie holding something `login` would
+        // never have written must not send the browser off-origin.
+        let headers = headers_with_cookie(&format!("{RETURN_COOKIE_NAME}=//evil.com"));
+        assert_eq!(return_destination(&headers), "/");
+    }
+
+    #[test]
+    fn return_destination_reads_a_cookie_whose_value_holds_an_equals_sign() {
+        // `cookie::write_for` writes `next` as the cookie value verbatim, and
+        // the everyday `next` is a path with a query string, so the cookie
+        // value routinely contains `=`. `cookie::read` splits each pair on
+        // the *first* `=` only, so this proves the value round-trips whole
+        // rather than being cut at its own `=`.
+        let set_cookie = cookie::write_for(
+            RETURN_COOKIE_NAME,
+            "/health?x=1",
+            cookie::BRIEF_MAX_AGE_SECONDS,
+        );
+        let headers = headers_with_cookie(&set_cookie);
+        assert_eq!(return_destination(&headers), "/health?x=1");
+    }
 }
