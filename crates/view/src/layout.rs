@@ -11,6 +11,8 @@ const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js";
 const STYLE: &str = r"
 body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 0 1rem; max-width: 72rem; margin-inline: auto; }
 header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #ddd; }
+.sign-out { display: contents; }
+.sign-out button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
 #ask-form { display: grid; gap: .5rem; max-width: 40rem; margin: 2rem 0; }
 #ask-form input { font: inherit; padding: .5rem; }
 .htmx-indicator { display: none; }
@@ -403,7 +405,12 @@ pub fn header(viewer: &Viewer) -> Markup {
                 }
                 Viewer::SignedIn { email } => {
                     span .viewer-email { (email) }
-                    a href="/auth/logout" { "Sign out" }
+                    // Sign-out revokes the session, so it must be a POST
+                    // that a stray link or prefetch can never trigger; a
+                    // form is the markup that issues one from a click.
+                    form .sign-out action="/auth/logout" method="post" {
+                        button type="submit" { "Sign out" }
+                    }
                 }
             }
         }
@@ -645,6 +652,20 @@ mod tests {
         assert!(rendered.contains("someone@example.com"));
         assert!(rendered.contains("/auth/logout"));
         assert!(!rendered.contains("/auth/login"));
+    }
+
+    #[test]
+    fn a_signed_in_viewer_signs_out_with_a_post_not_a_link() {
+        // An anchor only ever issues a GET; sign-out revokes the session and
+        // must not be reachable that way, so the control has to be a form.
+        let viewer = Viewer::SignedIn {
+            email: "someone@example.com".to_owned(),
+        };
+        let rendered = header(&viewer).into_string();
+        let tag = opening_tag_containing(&rendered, "/auth/logout");
+        assert!(tag.starts_with("<form"));
+        assert!(tag.contains(r#"method="post""#));
+        assert!(tag.contains(r#"action="/auth/logout""#));
     }
 
     #[test]
