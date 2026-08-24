@@ -8,7 +8,7 @@
     "command": "worker-build --release"
   },
   // `id` is only needed to deploy. For `wrangler dev`, set
-  // WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB to the Neon URL instead,
+  // CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB to the Neon URL instead,
   // which keeps the secret out of this file.
   "hyperdrive": [
     {

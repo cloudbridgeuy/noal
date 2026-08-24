@@ -68,7 +68,7 @@ docker exec noal-spike-pg psql -U spike -d spike \
   -c "INSERT INTO note (body) VALUES ('first note'),('second note');"
 
 npm install
-WRANGLER_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB="postgres://spike:spike@localhost:55432/spike" \
+CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_DB="postgres://spike:spike@localhost:55432/spike" \
   ./node_modules/.bin/wrangler dev --port 8787
 ```
 
