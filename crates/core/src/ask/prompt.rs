@@ -39,8 +39,8 @@ to a user. The rows are in a variable named `rows`, an array of objects with \
 exactly the fields described in the shape. You never see the data; bind to \
 the fields by name. Return only the template: plain HTML, no markdown fences, \
 no explanation. Use semantic HTML. Your output may fetch nothing, navigate \
-nowhere, and run nothing: no attributes carrying a URL (href, src, srcset, \
-action, formaction), no htmx attributes, no <form>, <iframe>, <object>, \
+nowhere, and run nothing: no attributes carrying a URL (href, ping, poster, \
+src, srcset, action, formaction), no htmx attributes, no <form>, <iframe>, <object>, \
 <embed>, <base>, or <link> element, no <script> element, no <style> element, \
 no meta refresh, no inline event handlers (attribute names beginning with \
 \"on\"), and no url(...) or @import anywhere in the output. Plain inline \

@@ -629,6 +629,37 @@ mod tests {
     }
 
     #[test]
+    fn a_mixed_refusal_budget_exhausts_at_the_render_stage() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
+
+        // One Fill-stage refusal (Tera could not bind the template).
+        let retry = pipeline.apply(Event::Filled(Err("variable `missing` not found".into())));
+        assert!(matches!(retry.as_slice(), [Step::Render { .. }]));
+
+        // The clean re-render fills again, but its output carries a
+        // forbidden token: one Render-stage refusal.
+        let after_render = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
+        assert!(matches!(after_render.as_slice(), [Step::Fill { .. }]));
+
+        // Both kinds share `render_attempts`, so the budget is spent even
+        // though each stage was refused only once.
+        let done = pipeline.apply(Event::Filled(Ok("<a href=\"/x\">go</a>".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Failed {
+                stage: Stage::Render
+            }
+        );
+        assert_eq!(outcome.debug.attempts.len(), 2);
+        assert_eq!(outcome.debug.attempts[0].stage, Stage::Fill);
+        assert_eq!(outcome.debug.attempts[1].stage, Stage::Render);
+    }
+
+    #[test]
     fn debug_attempts_holds_every_refusal_in_order() {
         let (mut pipeline, _) = Pipeline::start("open tasks".into());
         let _ = pipeline.apply(Event::Planned(plan()));

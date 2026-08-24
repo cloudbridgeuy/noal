@@ -12,8 +12,17 @@ const FORBIDDEN_ELEMENTS: [&str; 8] = [
     "form", "iframe", "object", "embed", "base", "link", "script", "style",
 ];
 
-/// Attributes whose value is a URL the browser will fetch or navigate to.
-const FORBIDDEN_ATTRIBUTES: [&str; 5] = ["href", "src", "srcset", "action", "formaction"];
+/// Attributes whose effect is to fetch a URL or navigate to one, including
+/// `<video poster>`'s silent fetch and `<a ping>`'s click-time navigation.
+const FORBIDDEN_ATTRIBUTES: [&str; 7] = [
+    "href",
+    "ping",
+    "poster",
+    "src",
+    "srcset",
+    "action",
+    "formaction",
+];
 
 /// Report the first forbidden token in rendered output.
 ///
@@ -155,10 +164,12 @@ mod tests {
     fn every_url_carrying_attribute_trips() {
         for (snippet, name) in [
             ("<a href=\"/x\">", "href"),
+            ("<video poster=\"x.jpg\">", "poster"),
             ("<img src=\"x.png\">", "src"),
             ("<img srcset=\"x.png 1w\">", "srcset"),
             ("<form action=\"/x\">", "form"),
             ("<button formaction=\"/x\">", "formaction"),
+            ("<a ping=\"/track\">", "ping"),
         ] {
             assert_eq!(forbidden_token(snippet), Some(name), "trip on {snippet}");
         }
@@ -232,8 +243,11 @@ mod tests {
 
     #[test]
     fn prose_mentioning_a_token_trips_and_that_is_accepted() {
-        // A row value whose own text says `href=` trips the scan; the cost
-        // is one retry, never a wrong page. Recorded so nobody "fixes" it.
+        // A row value whose own text trips the scan — either an exact
+        // attribute name like `href=` or a bare prefix like the `on` of
+        // `online=` — costs one retry, never a wrong page. Recorded so
+        // nobody "fixes" it.
         assert_eq!(forbidden_token("<p>wrote href= today</p>"), Some("href"));
+        assert_eq!(forbidden_token("<p>online=yes</p>"), Some("on*"));
     }
 }
