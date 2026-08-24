@@ -69,6 +69,21 @@ pub enum Verdict {
     },
 }
 
+/// Where one ask came from.
+///
+/// The pipeline reads this to decide its retry policy: an [`Origin::Asked`]
+/// ask may send the model back to work, a [`Origin::Reopened`] ask owns its
+/// stored plan and template and never calls the model at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    /// The viewer typed a request; the model plans and renders from scratch.
+    Asked,
+    /// A saved window was reopened; its stored query runs through its stored
+    /// template, and a refused stage ends the ask.
+    Reopened,
+}
+
 /// One ask, start to finish.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -76,6 +91,8 @@ pub struct Outcome {
     pub request: String,
     /// How it ended.
     pub verdict: Verdict,
+    /// Whether the model was ever in the loop.
+    pub origin: Origin,
     /// What the debug panel shows.
     pub debug: Debug,
 }
@@ -93,6 +110,7 @@ impl Outcome {
                 Verdict::Answered { .. } => None,
                 Verdict::Failed { stage } => Some(*stage),
             },
+            origin: self.origin,
             debug: &self.debug,
         };
         serde_json::to_string(&payload)
@@ -108,6 +126,8 @@ struct DebugPayload<'a> {
     request: &'a str,
     /// The stage that gave up, if any.
     failed_stage: Option<Stage>,
+    /// Whether the model was ever in the loop.
+    origin: Origin,
     /// The plan, template, attempts, and timings.
     #[serde(flatten)]
     debug: &'a Debug,
@@ -116,12 +136,13 @@ struct DebugPayload<'a> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{Debug, Outcome, Stage, StageAttempt, Timing, Verdict};
+    use super::{Debug, Origin, Outcome, Stage, StageAttempt, Timing, Verdict};
 
     fn outcome(verdict: Verdict) -> Outcome {
         Outcome {
             request: "open tasks".into(),
             verdict,
+            origin: Origin::Asked,
             debug: Debug {
                 plan: None,
                 template: Some("<p>{{ rows | length }}</script>".into()),
@@ -156,6 +177,25 @@ mod tests {
         let json = outcome(Verdict::Failed { stage: Stage::Fill }).debug_json();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["failed_stage"], "fill");
+    }
+
+    #[test]
+    fn debug_json_names_where_the_ask_came_from() {
+        let asked = outcome(Verdict::Answered {
+            html: String::new(),
+        })
+        .debug_json();
+        let value: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        assert_eq!(value["origin"], "asked");
+
+        let reopened = Outcome {
+            origin: Origin::Reopened,
+            ..outcome(Verdict::Failed {
+                stage: Stage::Query,
+            })
+        };
+        let value: serde_json::Value = serde_json::from_str(&reopened.debug_json()).unwrap();
+        assert_eq!(value["origin"], "reopened");
     }
 
     #[test]

@@ -125,7 +125,16 @@ async fn save_window(
     Ok(id)
 }
 
-/// Drive the pipeline to completion.
+/// Drive the pipeline to completion from a fresh start.
+///
+/// Pops whatever steps the pipeline hands back, runs them, and feeds the
+/// results in as events.
+async fn run(state: &AppState, request: String) -> Result<Outcome, Failure> {
+    let (pipeline, steps) = Pipeline::start(request);
+    drive(pipeline, steps, state).await
+}
+
+/// Drive any pipeline — started fresh or reopened — to completion.
 ///
 /// Pops whatever steps the pipeline hands back, runs them, and feeds the
 /// results in as events. A `Query` and a `Render` step, when both are
@@ -133,9 +142,11 @@ async fn save_window(
 /// they are the only pair run concurrently; every other step runs alone.
 /// Nothing here decides what a result means — that is
 /// [`Pipeline::apply`]'s job.
-async fn run(state: &AppState, request: String) -> Result<Outcome, Failure> {
-    let (mut pipeline, mut steps) = Pipeline::start(request);
-
+pub(crate) async fn drive(
+    mut pipeline: Pipeline,
+    mut steps: Vec<Step>,
+    state: &AppState,
+) -> Result<Outcome, Failure> {
     loop {
         let mut events = Vec::new();
         let mut pending_query: Option<String> = None;

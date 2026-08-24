@@ -5,8 +5,11 @@
 //! per domain area as the product takes shape, and keep every function pure.
 
 use maud::{html, Markup};
+use noal_core::ask::outcome::Outcome;
 
+use crate::ask;
 use crate::layout::{page, Chrome, Viewer};
+use crate::windows::cut;
 
 /// The landing page.
 #[must_use]
@@ -23,6 +26,27 @@ pub fn home(chrome: &Chrome) -> Markup {
                 Viewer::SignedIn { .. } => {
                     (crate::ask::form())
                 }
+            }
+        },
+    )
+}
+
+/// A saved window reopened as its own page.
+///
+/// A window URL answers with a full document — never a fragment — so a link
+/// from the tree, a pushed URL, and a reload all land on the same complete
+/// page. The palette marks this window's row, and the debug payload rides
+/// along so the Debug tab shows what produced the view.
+#[must_use]
+pub fn window(chrome: &Chrome, outcome: &Outcome) -> Markup {
+    page(
+        cut(&outcome.request).as_ref(),
+        chrome,
+        &html! {
+            section #ask-result {
+                h1 { (cut(&outcome.request)) }
+                (ask::outcome_view(outcome))
+                script #ask-debug type="application/json" { (maud::PreEscaped(outcome.debug_json())) }
             }
         },
     )
@@ -47,17 +71,27 @@ pub fn failure(chrome: &Chrome, status: u16, message: &str) -> Markup {
 
 #[cfg(test)]
 mod tests {
-    use super::{failure, home};
+    use super::{failure, home, window};
     use crate::layout::{Chrome, Viewer};
+    use crate::windows::{Current, Entry, Node, Windows};
+    use noal_core::ask::outcome::{Debug, Origin, Outcome, Stage, Verdict};
 
     fn signed_in(email: &str) -> Chrome {
-        use crate::windows::{Current, Windows};
         Chrome {
             viewer: Viewer::SignedIn {
                 email: email.to_owned(),
             },
             windows: Windows::Tree(Vec::new()),
             current: Current::Home,
+        }
+    }
+
+    fn outcome(verdict: Verdict) -> Outcome {
+        Outcome {
+            request: "open tasks".into(),
+            verdict,
+            origin: Origin::Reopened,
+            debug: Debug::default(),
         }
     }
 
@@ -89,5 +123,76 @@ mod tests {
             failure(&Chrome::anonymous(), 500, "The database did not answer.").into_string();
         assert!(rendered.contains("The database did not answer."));
         assert!(!rendered.contains("id=\"palette\""));
+    }
+
+    #[test]
+    fn a_window_page_is_a_full_document_carrying_the_answer() {
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            &outcome(Verdict::Answered {
+                html: "<ul><li>a</li></ul>".into(),
+            }),
+        )
+        .into_string();
+
+        assert!(rendered.starts_with("<!DOCTYPE html>"));
+        assert!(rendered.contains("<div class=\"ask-answer\"><ul><li>a</li></ul></div>"));
+        assert!(rendered.contains("id=\"ask-debug\""));
+        assert!(rendered.contains("\"origin\":\"reopened\""));
+    }
+
+    #[test]
+    fn a_window_page_marks_its_own_row_in_the_tree() {
+        let mut entry = Entry {
+            id: uuid::Uuid::from_bytes([7; 16]),
+            parent_id: None,
+            request: "open tasks".into(),
+            name: None,
+        };
+        entry.name = Some("Weekly report".to_owned());
+        let chrome = Chrome {
+            viewer: signed_in("someone@example.com").viewer,
+            windows: Windows::Tree(vec![Node {
+                entry,
+                children: Vec::new(),
+            }]),
+            current: Current::Window(uuid::Uuid::from_bytes([7; 16])),
+        };
+
+        let rendered = window(
+            &chrome,
+            &outcome(Verdict::Answered {
+                html: String::new(),
+            }),
+        )
+        .into_string();
+        assert!(rendered.contains("<li id=\"window-current\"><a href=\"/w/"));
+        assert_eq!(rendered.matches("id=\"window-current\"").count(), 1);
+    }
+
+    #[test]
+    fn a_window_page_shows_the_refusal_without_a_retry_form() {
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            &outcome(Verdict::Failed {
+                stage: Stage::Query,
+            }),
+        )
+        .into_string();
+        assert!(rendered.contains("could not run the query"));
+        assert!(
+            !rendered.contains("hx-post"),
+            "re-running is not this slice's job"
+        );
+    }
+
+    #[test]
+    fn the_window_page_escapes_the_request_it_titles() {
+        let mut o = outcome(Verdict::Answered {
+            html: String::new(),
+        });
+        o.request = "<script>alert(1)</script>".into();
+        let rendered = window(&signed_in("someone@example.com"), &o).into_string();
+        assert!(rendered.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     }
 }

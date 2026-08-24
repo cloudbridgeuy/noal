@@ -7,7 +7,7 @@
 //! means, when to give up — lives here as ordinary code with ordinary tests,
 //! and the shell's loop never has to know why it is doing what it does.
 
-use super::outcome::{Debug, Outcome, Stage, StageAttempt, Timing, Verdict};
+use super::outcome::{Debug, Origin, Outcome, Stage, StageAttempt, Timing, Verdict};
 use super::plan::{wrap_sql, Plan};
 use super::prompt::{plan_prompt, render_prompt, Attempt, MAX_ATTEMPTS};
 
@@ -82,6 +82,9 @@ pub struct Pipeline {
     render_attempts: Vec<Attempt>,
     /// What the debug panel will show.
     debug: Debug,
+    /// Whether the model was ever in the loop. A reopened pipeline owns its
+    /// plan and template, so its retry hooks refuse to call the model again.
+    origin: Origin,
 }
 
 impl Pipeline {
@@ -98,8 +101,38 @@ impl Pipeline {
             plan_attempts: Vec::new(),
             render_attempts: Vec::new(),
             debug: Debug::default(),
+            origin: Origin::Asked,
         };
         (pipeline, vec![Step::Plan { prompt }])
+    }
+
+    /// Reopen a saved window: run its stored plan's query through its stored
+    /// template.
+    ///
+    /// The plan and template are set up front, so the first step is the
+    /// query — no planning call, no rendering call. Should the query or the
+    /// fill be refused there is nothing to retry with: the ask ends rather
+    /// than reaching for the model, which is what [`Origin::Reopened`] means.
+    #[must_use]
+    pub fn reopen(request: String, plan: Plan, template: String) -> (Self, Vec<Step>) {
+        let sql = wrap_sql(&plan.sql);
+        let debug = Debug {
+            plan: Some(plan.clone()),
+            template: Some(template.clone()),
+            ..Debug::default()
+        };
+        let pipeline = Self {
+            request,
+            plan: Some(plan),
+            rows: None,
+            template: Some(template),
+            filled: false,
+            plan_attempts: Vec::new(),
+            render_attempts: Vec::new(),
+            debug,
+            origin: Origin::Reopened,
+        };
+        (pipeline, vec![Step::Query { sql }])
     }
 
     /// Record how long a stage took, for the debug panel.
@@ -183,6 +216,14 @@ impl Pipeline {
             error: message,
         });
 
+        if self.origin == Origin::Reopened {
+            // The SQL is the window's own, stored when it was saved. There
+            // is no planner to fix it, so a refusal ends the ask instead of
+            // becoming another model call.
+            return vec![Step::Done(self.finish(Verdict::Failed {
+                stage: Stage::Query,
+            }))];
+        }
         if self.plan_attempts.len() < MAX_ATTEMPTS {
             let prompt = plan_prompt(&self.request, &self.plan_attempts);
             vec![Step::Plan { prompt }]
@@ -217,6 +258,14 @@ impl Pipeline {
             error,
         });
 
+        if self.origin == Origin::Reopened {
+            // The template is the window's own, stored when it was saved.
+            // There is no renderer to rewrite it, so a refusal ends the ask
+            // instead of becoming another model call.
+            return vec![Step::Done(
+                self.finish(Verdict::Failed { stage: Stage::Fill }),
+            )];
+        }
         if self.render_attempts.len() < MAX_ATTEMPTS {
             self.filled = false;
             let shape = self
@@ -255,6 +304,7 @@ impl Pipeline {
         Outcome {
             request: self.request.clone(),
             verdict,
+            origin: self.origin,
             debug: self.debug.clone(),
         }
     }
@@ -263,7 +313,7 @@ impl Pipeline {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{Event, Pipeline, Step};
+    use super::{Event, Origin, Pipeline, Step};
     use crate::ask::outcome::{Stage, Timing, Verdict};
     use crate::ask::plan::{Column, ColumnKind, Plan};
     use serde_json::json;
@@ -611,5 +661,105 @@ mod tests {
             }
         }
         assert_eq!(fills, 1);
+    }
+
+    fn stored_template() -> String {
+        "<p>{{ rows | length }}</p>".into()
+    }
+
+    #[test]
+    fn reopening_issues_only_a_query_and_carries_the_stored_artifacts() {
+        let (pipeline, steps) = Pipeline::reopen("open tasks".into(), plan(), stored_template());
+        match steps.as_slice() {
+            [Step::Query { sql }] => {
+                assert_eq!(
+                    sql,
+                    "select coalesce(json_agg(t), '[]')::text as rows from (select id from ticket) t"
+                );
+            }
+            other => panic!("expected exactly one Query step, got {other:?}"),
+        }
+        // The debug panel sees the stored plan and template, not blanks.
+        assert!(pipeline.debug.plan.is_some());
+        assert_eq!(
+            pipeline.debug.template.as_deref(),
+            Some("<p>{{ rows | length }}</p>")
+        );
+    }
+
+    #[test]
+    fn a_reopened_ask_answers_without_a_single_model_call() {
+        let (mut pipeline, steps) =
+            Pipeline::reopen("open tasks".into(), plan(), stored_template());
+
+        // The only steps a reopened ask may issue are Query and Fill; a Plan
+        // or Render step would mean the model was called.
+        assert!(matches!(steps.as_slice(), [Step::Query { .. }]));
+
+        let after_query = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+        match after_query.as_slice() {
+            [Step::Fill {
+                template,
+                rows: filled_rows,
+            }] => {
+                assert_eq!(template, "<p>{{ rows | length }}</p>");
+                assert_eq!(filled_rows, &json!([{ "id": 1 }]));
+            }
+            other => panic!("expected exactly one Fill step, got {other:?}"),
+        }
+
+        let done = pipeline.apply(Event::Filled(Ok("<p>1</p>".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Answered {
+                html: "<p>1</p>".into()
+            }
+        );
+        assert_eq!(outcome.origin, Origin::Reopened);
+        assert!(outcome.debug.attempts.is_empty());
+    }
+
+    #[test]
+    fn a_refused_query_on_a_reopened_ask_gives_up_instead_of_calling_the_model() {
+        let (mut pipeline, _) = Pipeline::reopen("open tasks".into(), plan(), stored_template());
+
+        let done = pipeline.apply(Event::Queried(Err("column \"nope\" does not exist".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Failed {
+                stage: Stage::Query
+            }
+        );
+        assert_eq!(outcome.origin, Origin::Reopened);
+        // The refusal is still recorded, so the debug panel can say why.
+        assert_eq!(outcome.debug.attempts.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_fill_on_a_reopened_ask_gives_up_instead_of_calling_the_model() {
+        let (mut pipeline, _) =
+            Pipeline::reopen("open tasks".into(), plan(), "{{ rows.0.missing }}".into());
+        let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
+
+        let done = pipeline.apply(Event::Filled(Err("variable `missing` not found".into())));
+        let outcome = done_outcome(&done);
+        assert_eq!(outcome.verdict, Verdict::Failed { stage: Stage::Fill });
+        assert_eq!(outcome.origin, Origin::Reopened);
+        assert_eq!(outcome.debug.attempts.len(), 1);
+    }
+
+    #[test]
+    fn an_asked_ask_keeps_its_retry_policy_and_origin() {
+        let (mut pipeline, _) = Pipeline::start("open tasks".into());
+        let _ = pipeline.apply(Event::Planned(plan()));
+
+        // One refusal is not the end for an asked ask; the model plans again.
+        let steps = pipeline.apply(Event::Queried(Err("bad sql".into())));
+        assert!(matches!(steps.as_slice(), [Step::Plan { .. }]));
+
+        let done = pipeline.apply(Event::Queried(Err("worse sql".into())));
+        assert_eq!(done_outcome(&done).origin, Origin::Asked);
     }
 }
