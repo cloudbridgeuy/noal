@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health/db", get(health::database))
         .route("/health/llm", get(health::model))
         .route("/w/{id}", get(window::show))
+        .route("/w/{id}/name", post(window::rename))
         .fallback(home::not_found)
         .with_state(state)
 }

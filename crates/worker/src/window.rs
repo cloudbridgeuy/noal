@@ -79,3 +79,46 @@ pub async fn find(
         name: row.get(7),
     }))
 }
+
+/// Store one window's viewer-given name, or clear it with `None`.
+///
+/// Scoped on both sides — the window's id and its owner — so a name can
+/// only ever land in a row the session belongs to. Parameterized like every
+/// statement here: `name` is user input.
+///
+/// A scoped update that touches no row means no such window: an unknown id
+/// and another viewer's id are indistinguishable here, exactly as they are
+/// in [`find`], and `Err(NoSuch)` is what says so.
+///
+/// # Errors
+///
+/// Returns the driver's error when the connection fails or Postgres refuses
+/// the update, and [`SetNameError::NoSuch`] when no row owned by this
+/// viewer matched.
+pub async fn set_name(
+    client: &tokio_postgres::Client,
+    id: Uuid,
+    user_id: &str,
+    name: Option<&str>,
+) -> Result<(), SetNameError> {
+    const SET_NAME: &str = "update \"window\" set name = $1 where id = $2 and user_id = $3";
+
+    let updated = client
+        .execute(SET_NAME, &[&name, &id, &user_id])
+        .await
+        .map_err(|error| SetNameError::Driver(error.to_string()))?;
+
+    if updated == 0 {
+        return Err(SetNameError::NoSuch);
+    }
+    Ok(())
+}
+
+/// Why a name could not be stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetNameError {
+    /// The connection failed or Postgres refused the statement.
+    Driver(String),
+    /// No row owned by this viewer carries that id.
+    NoSuch,
+}

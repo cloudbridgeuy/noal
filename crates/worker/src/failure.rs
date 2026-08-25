@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use noal_core::auth::AuthError;
 use noal_core::session::SessionError;
+use noal_core::window::TooLong;
 
 use crate::config::ConfigError;
 use crate::respond;
@@ -52,6 +53,11 @@ pub enum Failure {
     /// which windows exist or whose they are.
     #[error("no such window")]
     NoSuchWindow,
+
+    /// A viewer-supplied window name was longer than what may be stored. It
+    /// was refused whole, never truncated.
+    #[error("name too long")]
+    NameTooLong,
 }
 
 impl Failure {
@@ -77,6 +83,7 @@ impl Failure {
             Self::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Database(_) | Self::Upstream(_) | Self::Model(_) => StatusCode::BAD_GATEWAY,
             Self::Auth(_) => StatusCode::BAD_REQUEST,
+            Self::NameTooLong => StatusCode::UNPROCESSABLE_ENTITY,
             Self::NoSuchWindow => StatusCode::NOT_FOUND,
             Self::Session(_) | Self::NotSignedIn => StatusCode::UNAUTHORIZED,
         }
@@ -95,6 +102,7 @@ impl Failure {
             Self::Upstream(_) => "A service noal depends on did not answer.",
             Self::Model(_) => "The model did not answer.",
             Self::Auth(_) => "That sign-in could not be completed.",
+            Self::NameTooLong => "That name is too long to store.",
             Self::NoSuchWindow => "There is no window at this address.",
             Self::Session(_) | Self::NotSignedIn => "Please sign in.",
         }
@@ -123,6 +131,12 @@ impl Failure {
         let markup = noal_view::layout::toast(self.message());
 
         (status, Html(markup.into_string())).into_response()
+    }
+}
+
+impl From<TooLong> for Failure {
+    fn from(_: TooLong) -> Self {
+        Self::NameTooLong
     }
 }
 

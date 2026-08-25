@@ -8,7 +8,7 @@ use noal_core::ask::outcome::Outcome;
 const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js";
 
 /// Enough CSS to make the page and the overlay usable. No framework yet.
-const STYLE: &str = r"
+const STYLE: &str = r#"
 body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 0 1rem; max-width: 72rem; margin-inline: auto; }
 header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #ddd; }
 .sign-out { display: contents; }
@@ -35,6 +35,13 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 #palette ul ul { padding-left: 1rem; }
 #palette a { color: #9cf; }
 .windows-unavailable { color: #f99; }
+/* The rename editor hides its row's label link while open. The opener
+   button sits beside the form, so it needs its own sizing rule. */
+.window-rename-open { font: inherit; color: inherit; background: none; border: none;
+  padding: 0; cursor: pointer; }
+.window-rename input[type="text"] { font: inherit; width: 100%; box-sizing: border-box; }
+.window-rename button { font: inherit; color: inherit; background: none; border: none;
+  padding: 0 .25rem; cursor: pointer; }
 #ask-toast { color: #b33; }
 #palette pre { white-space: pre-wrap; background: #222; padding: .5rem; }
 #debug-copy { font: inherit; }
@@ -46,7 +53,7 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
   border-radius: .5rem; box-shadow: 0 .25rem 1rem rgba(0, 0, 0, .15); padding: .75rem 1rem; }
 .toast p { margin: 0; flex: 1; }
 .toast-dismiss { font: inherit; }
-";
+"#;
 
 /// The script that toggles the drawer, switches the palette tabs, fills the
 /// debug tab from the last answer, and wires the keyboard shortcut.
@@ -136,9 +143,9 @@ const OVERLAY_SCRIPT: &str = r#"
   if (panel) {
     var toggle = document.getElementById('debug-toggle');
     var input = document.getElementById('ask-input');
-    // #toasts is a sibling of #palette, rendered under the same condition,
-    // so whenever this block runs it is on the page too.
-    var toasts = document.getElementById('toasts');
+    // The toast region is a sibling of #palette but sits *after* this
+    // script in the document, so it does not exist yet while the script
+    // runs. Every touch of it looks it up at event time instead.
     // navigator.platform is deprecated, but it is the only signal small
     // enough for a tooltip this size; a wrong guess here is cosmetic.
     toggle.title = /Mac/.test(navigator.platform)
@@ -165,9 +172,58 @@ const OVERLAY_SCRIPT: &str = r#"
     // Delegated: toasts arrive from the server, appended long after this
     // listener is registered, so a listener bound to each toast would miss
     // every one that shows up later.
-    toasts.addEventListener('click', function (event) {
+    panel.addEventListener('click', function (event) {
       var dismiss = event.target.closest('.toast-dismiss');
-      if (dismiss) dismissToast(dismiss.closest('.toast'));
+      if (!dismiss) return;
+      var toasts = document.getElementById('toasts');
+      if (toasts) dismissToast(dismiss.closest('.toast'));
+    });
+    // Rename editors live inside every tree row, swapped in and out with
+    // the tree itself, so listeners bind to the palette once and delegate,
+    // the same way toast dismissal does.
+    //
+    // Only one edit runs at a time: opening a second rename puts away the
+    // first. Putting away hides the form and shows the label back, and the
+    // input's live value is reset to its stored default, so reopening an
+    // edit — by button, Cancel, or Escape — always starts from the stored
+    // name rather than whatever was typed into the closed editor.
+    var openRename = null;
+    function putAwayRename() {
+      if (!openRename) return;
+      var field = openRename.querySelector('input[name="name"]');
+      if (field) field.value = field.defaultValue;
+      showLabel(openRename);
+      openRename.hidden = true;
+      openRename = null;
+    }
+    function showLabel(form) {
+      var row = form.closest('li');
+      var label = row ? row.querySelector('.window-label') : null;
+      if (label) label.hidden = false;
+    }
+    panel.addEventListener('click', function (event) {
+      var opener = event.target.closest('.window-rename-open');
+      if (opener) {
+        putAwayRename();
+        // The opener is the row's visible control; its form is the hidden
+        // sibling beside it.
+        var form = opener.parentElement.querySelector('form.window-rename');
+        if (!form) return;
+        openRename = form;
+        form.hidden = false;
+        var label = form.closest('li').querySelector('.window-label');
+        if (label) label.hidden = true;
+        var field = form.querySelector('input[name="name"]');
+        if (field) { field.focus(); field.select(); }
+        return;
+      }
+      if (event.target.closest('.window-rename-cancel')) putAwayRename();
+    });
+    // A saved rename answers with the fresh tree, whose swap takes the
+    // open editor's markup with it; forget it so Escape never reaches for
+    // a detached form.
+    document.body.addEventListener('htmx:afterSwap', function () {
+      openRename = null;
     });
     var tabs = document.querySelectorAll('#palette .tabs button');
     tabs.forEach(function (tab) {
@@ -204,15 +260,24 @@ const OVERLAY_SCRIPT: &str = r#"
       var typingElsewhere = target && target !== input && (
         target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' ||
         target.tagName === 'SELECT' || target.isContentEditable);
-      if (typingElsewhere) return;
+      // Escape typed inside the open rename input must still cancel the
+      // edit, so the guard steps aside for that one key.
+      if (typingElsewhere && !(event.key === 'Escape' && openRename)) return;
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey &&
           event.key.toLowerCase() === 'k') {
         event.preventDefault();
         togglePalette();
       } else if (event.key === 'Escape') {
-        // The newest toast goes first: one Escape clears it, and only the
-        // next Escape — once none remain — closes the palette.
-        var newestToast = toasts.lastElementChild;
+        // An open rename edit goes first: Escape inside the editor cancels
+        // it, keeping the stored name, and only the next Escape — with no
+        // editor open — reaches the toast below.
+        if (openRename) { putAwayRename(); return; }
+        // The newest toast goes next: one Escape clears it, and only the
+        // following Escape — once none remain — closes the palette. The
+        // region is looked up now, not at load, because it sits after
+        // this script in the document.
+        var toasts = document.getElementById('toasts');
+        var newestToast = toasts ? toasts.lastElementChild : null;
         if (newestToast) {
           dismissToast(newestToast);
         } else if (!panel.hidden) {
@@ -744,23 +809,26 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_script_dismisses_the_newest_toast_before_closing_the_palette() {
+    fn the_overlay_script_looks_the_toast_region_up_at_event_time() {
+        // The region sits after this script in the document, so binding to
+        // it at load would run on null and kill every later listener. The
+        // Escape branch must look it up when the key lands.
         let script = super::OVERLAY_SCRIPT;
-        assert!(script.contains("function dismissToast(el)"));
-        assert!(script.contains("toasts.lastElementChild"));
-        // The toast branch must be checked, and win, before the palette is
-        // ever asked to close.
+        assert!(!script.contains("var toasts = document.getElementById('toasts');\n    var toggle"));
         let escape_at = script.find("event.key === 'Escape'").unwrap();
-        let newest_at = script.find("var newestToast").unwrap();
-        let toggle_at = script[newest_at..].find("togglePalette();").unwrap() + newest_at;
-        assert!(escape_at < newest_at);
-        assert!(newest_at < toggle_at);
+        let after_escape = &script[escape_at..];
+        let lookup_at = after_escape.find("getElementById('toasts')").unwrap();
+        let use_at = after_escape.find("lastElementChild").unwrap();
+        assert!(lookup_at < use_at);
     }
 
     #[test]
     fn the_overlay_script_delegates_the_toast_dismiss_click() {
         let script = super::OVERLAY_SCRIPT;
-        assert!(script.contains("toasts.addEventListener('click'"));
+        // The dismiss click is caught on the palette, which exists when the
+        // script runs; the toast region itself sits after the script in the
+        // document and is looked up at event time.
+        assert!(script.contains("panel.addEventListener('click'"));
         assert!(script.contains("closest('.toast-dismiss')"));
     }
 
@@ -855,5 +923,75 @@ mod tests {
         let send_error_at = script.find("htmx:sendError").unwrap();
         let between = &script[response_error_at..send_error_at];
         assert!(between.contains("appendOfflineToast(toasts)"));
+    }
+
+    // The rename editor's runtime behaviour is JavaScript the toolchain
+    // never executes; these pin the source text it depends on.
+
+    #[test]
+    fn the_overlay_script_opens_one_rename_at_a_time_by_unhiding_its_form() {
+        let script = super::OVERLAY_SCRIPT;
+        // The opener unhides the form beside it and hides the row's label
+        // link, rather than fetching anything — no GET route serves the
+        // form.
+        assert!(script.contains(".window-rename-open"));
+        assert!(script.contains("form.hidden = false;"));
+        assert!(script.contains(".window-label"));
+        assert!(script.contains("label.hidden = true;"));
+        assert!(script.contains("field.focus(); field.select();"));
+        // Opening a second editor puts away the first.
+        let open_at = script.find("function (event) {").unwrap();
+        let put_at = script[open_at..].find("putAwayRename();").unwrap();
+        assert!(put_at > 0);
+    }
+
+    #[test]
+    fn the_overlay_script_cancels_a_rename_back_to_the_stored_name() {
+        // Putting an edit away hides the form and restores the label, and
+        // resets the field to its stored default — so reopening after
+        // Cancel or Escape starts from the stored name, never the text the
+        // viewer typed into the closed editor.
+        let script = super::OVERLAY_SCRIPT;
+        let start = script.find("function putAwayRename()").unwrap();
+        let body = &script[start..start + 400];
+        assert!(body.contains("hidden = true;"));
+        assert!(body.contains("field.value = field.defaultValue;"));
+    }
+
+    #[test]
+    fn the_escape_order_is_rename_then_newest_toast_then_palette() {
+        let script = super::OVERLAY_SCRIPT;
+        let escape_at = script.find("event.key === 'Escape'").unwrap();
+        let rename_at = script[escape_at..].find("if (openRename)").unwrap() + escape_at;
+        let toast_at = script[escape_at..].find("var newestToast").unwrap() + escape_at;
+        let palette_at = script[toast_at..].find("togglePalette();").unwrap() + toast_at;
+        assert!(rename_at < toast_at);
+        assert!(toast_at < palette_at);
+    }
+
+    #[test]
+    fn the_rename_guard_yields_escape_only_while_an_edit_is_open() {
+        // The typing-elsewhere guard would swallow keys typed into the
+        // rename input; Escape must still cancel through it, but only when
+        // an edit is actually open.
+        let script = super::OVERLAY_SCRIPT;
+        let guard_at = script.find("if (typingElsewhere").unwrap();
+        let after_guard = &script[guard_at..];
+        let line_end = after_guard.find('\n').unwrap();
+        let condition = &after_guard[..line_end];
+        assert!(condition.contains("typingElsewhere"));
+        assert!(condition.contains("event.key === 'Escape'"));
+        assert!(condition.contains("openRename"));
+    }
+
+    #[test]
+    fn a_tree_swap_forgets_any_open_rename_editor() {
+        // The fresh tree replaces the form being edited, so the tracked
+        // reference must be dropped or Escape would reach for a detached
+        // node while the palette stays open.
+        let script = super::OVERLAY_SCRIPT;
+        let reset_at = script.rfind("htmx:afterSwap").unwrap();
+        let listener = &script[reset_at..reset_at + 400];
+        assert!(listener.contains("openRename = null;"));
     }
 }
