@@ -16,12 +16,13 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Form;
+use maud::{html, Markup};
 use noal_core::ask::outcome::Outcome;
 use noal_core::ask::pipeline::Pipeline;
 use noal_core::ask::plan::{Column, Plan};
 use noal_core::window::{normalize_name, Window};
 use noal_view::layout::{Chrome, Viewer};
-use noal_view::windows::Current;
+use noal_view::windows::{tree, Current};
 use serde::Deserialize;
 
 use crate::extract::{Fragment, SignedIn};
@@ -77,6 +78,11 @@ pub struct NameForm {
 /// stays open through every rename path. Success swaps `#window-tree` in
 /// place: no page load, no closing drawer.
 ///
+/// When the form carried the current-window marker — it was the row of the
+/// window being viewed — the same response also carries that window's
+/// heading out of band, so the standing page's `<h2>` takes the new label in
+/// the same swap as the tree.
+///
 /// [`Failure::toast`] rides [`Fragment<SignedIn>`] so an absent session is
 /// a toast inside the open palette rather than a whole document landing
 /// where the tree should be.
@@ -91,10 +97,52 @@ pub async fn rename(
             let windows = crate::chrome::build(&state, &signed_in.0.user_id).await;
             // The form targets `#window-tree`, so the fresh tree is the
             // ordinary swap content — not an out-of-band rider like the
-            // ask's copy of it.
-            respond::html(StatusCode::OK, noal_view::windows::tree(&windows, &current))
+            // ask's copy of it. The heading rides out of band only when the
+            // renamed window is the one being viewed; on Home there is no
+            // standing heading to update.
+            let body = if current == Current::Home {
+                // No marker posted — a Home rename. No standing heading to
+                // update, so nothing rides out of band.
+                tree(&windows, &current)
+            } else {
+                renamed_body(&windows, &current)
+            };
+            respond::html(StatusCode::OK, body)
         }
         Err(failure) => failure.toast(),
+    }
+}
+
+/// The fresh tree with the renamed window's heading appended beside it.
+///
+/// The entry comes from the tree just read back from the store, so the
+/// heading renders name-or-cut from exactly the stored value the row shows —
+/// never a guess assembled from the request.
+fn renamed_body(windows: &noal_view::windows::Windows, current: &Current) -> Markup {
+    let Current::Window(id) = current else {
+        return tree(windows, current);
+    };
+    let entry = find_entry(windows, *id);
+    html! {
+        (tree(windows, current))
+        @if let Some(entry) = entry {
+            (noal_view::ask::oob_heading(&entry))
+        }
+    }
+}
+
+/// Find one window's entry anywhere in the tree, or `None` when it is gone.
+fn find_entry(
+    windows: &noal_view::windows::Windows,
+    id: uuid::Uuid,
+) -> Option<noal_core::window::Entry> {
+    match windows {
+        noal_view::windows::Windows::Tree(nodes) => nodes
+            .iter()
+            .flat_map(|node| node.flatten())
+            .find(|node| node.entry.id == id)
+            .map(|node| node.entry.clone()),
+        noal_view::windows::Windows::Unavailable => None,
     }
 }
 
@@ -127,7 +175,8 @@ async fn store(
     }
 
     // The marker field decides whether the fresh tree marks this row — the
-    // same fact the row's hidden input carried in.
+    // same fact the row's hidden input carried in, and whether the response
+    // carries that row's heading out of band.
     Ok(match form.current_window {
         Some(_) => Current::Window(id),
         None => Current::Home,
