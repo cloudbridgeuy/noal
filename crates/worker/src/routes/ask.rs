@@ -143,7 +143,10 @@ async fn answered_response(
 /// timings worth showing.
 fn refused_body(outcome: &Outcome, stage: Stage) -> Markup {
     html! {
-        (noal_view::layout::toast(noal_view::ask::failure_text(stage)))
+        (noal_view::layout::toast(noal_view::ask::failure_text(
+            stage,
+            noal_core::ask::outcome::Origin::Asked,
+        )))
         (noal_view::layout::debug_payload(outcome))
     }
 }

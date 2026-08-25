@@ -5,7 +5,7 @@
 //! already rendered it through Tera with autoescape on.
 
 use maud::{html, Markup, PreEscaped};
-use noal_core::ask::outcome::{Outcome, Stage, Verdict};
+use noal_core::ask::outcome::{Origin, Outcome, Stage, Verdict};
 
 /// The form that starts an ask. Submitting it replaces `#ask-result`, wherever
 /// on the page that lives, leaving the form itself in place.
@@ -72,7 +72,7 @@ pub fn outcome_view(outcome: &Outcome) -> Markup {
                 div .ask-answer { (PreEscaped(html)) }
             }
             Verdict::Failed { stage } => {
-                p .ask-failed { (failure_text(*stage)) }
+                p .ask-failed { (failure_text(*stage, outcome.origin)) }
             }
         }
     }
@@ -108,13 +108,29 @@ pub fn answer(request: &str, html: &str, saved: Saved) -> Markup {
 ///
 /// Public because the wording for a refused stage is ask knowledge; the
 /// generic toast chrome that carries it lives in `layout`.
+///
+/// A re-run's artifacts were written some time ago and worked then, so
+/// "noal could not run the query it wrote" would be a lie; the re-opened
+/// arms say what actually happened. A re-run never plans or renders, but
+/// the match stays exhaustive over stage and origin so the compiler, not
+/// a comment, holds that fact.
 #[must_use]
-pub const fn failure_text(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Plan => "noal could not work out which data to fetch.",
-        Stage::Query => "noal could not run the query it wrote.",
-        Stage::Render => "noal could not design a view for this.",
-        Stage::Fill => "noal could not fill its view with the data.",
+pub const fn failure_text(stage: Stage, origin: Origin) -> &'static str {
+    match (stage, origin) {
+        (Stage::Plan, Origin::Asked | Origin::Reopened) => {
+            "noal could not work out which data to fetch."
+        }
+        (Stage::Render, Origin::Asked | Origin::Reopened) => {
+            "noal could not design a view for this."
+        }
+        (Stage::Query, Origin::Asked) => "noal could not run the query it wrote.",
+        (Stage::Query, Origin::Reopened) => {
+            "This window no longer works: the query it saved was refused."
+        }
+        (Stage::Fill, Origin::Asked) => "noal could not fill its view with the data.",
+        (Stage::Fill, Origin::Reopened) => {
+            "This window no longer works: its view does not fit the data any more."
+        }
     }
 }
 
@@ -197,25 +213,46 @@ mod tests {
     }
 
     #[test]
-    fn every_stage_has_its_own_failure_wording() {
+    fn a_first_ask_keeps_its_wording() {
         // Distinct wording per stage, so a refusal names what actually gave
         // up rather than a generic "something went wrong".
-        let plan = failure_text(Stage::Plan);
-        let query = failure_text(Stage::Query);
-        let render = failure_text(Stage::Render);
-        let fill = failure_text(Stage::Fill);
+        assert_eq!(
+            failure_text(Stage::Plan, Origin::Asked),
+            "noal could not work out which data to fetch."
+        );
+        assert_eq!(
+            failure_text(Stage::Query, Origin::Asked),
+            "noal could not run the query it wrote."
+        );
+        assert_eq!(
+            failure_text(Stage::Render, Origin::Asked),
+            "noal could not design a view for this."
+        );
+        assert_eq!(
+            failure_text(Stage::Fill, Origin::Asked),
+            "noal could not fill its view with the data."
+        );
+    }
 
-        assert!(plan.contains("data to fetch"));
-        assert!(query.contains("run the query"));
-        assert!(render.contains("design a view"));
-        assert!(fill.contains("fill its view"));
-
-        let all = [plan, query, render, fill];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(a, b);
-            }
-        }
+    #[test]
+    fn a_refused_rerun_names_the_old_artifact() {
+        assert_eq!(
+            failure_text(Stage::Query, Origin::Reopened),
+            "This window no longer works: the query it saved was refused."
+        );
+        assert_eq!(
+            failure_text(Stage::Fill, Origin::Reopened),
+            "This window no longer works: its view does not fit the data any more."
+        );
+        // Unreachable on a re-run — the pipeline never plans or renders again.
+        assert_eq!(
+            failure_text(Stage::Plan, Origin::Reopened),
+            failure_text(Stage::Plan, Origin::Asked)
+        );
+        assert_eq!(
+            failure_text(Stage::Render, Origin::Reopened),
+            failure_text(Stage::Render, Origin::Asked)
+        );
     }
 
     #[test]

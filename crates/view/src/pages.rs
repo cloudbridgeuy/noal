@@ -211,7 +211,7 @@ mod tests {
             }),
         )
         .into_string();
-        assert!(rendered.contains("could not run the query"));
+        assert!(rendered.contains("the query it saved was refused"));
         // The palette carries the one ask form; the answer's own section
         // must not grow a second one.
         let start = rendered.find("<section id=\"ask-result\">").unwrap();
