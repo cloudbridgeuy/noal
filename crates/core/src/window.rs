@@ -6,17 +6,18 @@
 //! the palette's tree. Both are pure; reading rows from Postgres and writing
 //! them back are the shell's job.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
-use crate::ask::plan::Plan;
+use crate::ask::plan::{Column, Plan};
 
 /// One saved window: everything that recreates its view.
 ///
-/// `created_at` is deliberately absent: it is assigned by the database on
-/// insert and only ever used for ordering there, so no code needs to carry a
-/// value it cannot set.
+/// `created_at` is assigned by the database on insert and carried by
+/// [`Window`] once read back: the window page shows the window's age, so
+/// the value has a reader and must travel with the row. Nothing in noal
+/// writes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
     /// The window's identity. Drawn by the shell, so a failed insert wastes
@@ -36,26 +37,34 @@ pub struct Window {
     pub template: String,
     /// The name the viewer gave the window. Nothing writes one yet.
     pub name: Option<String>,
+    /// When the ask that produced this window succeeded.
+    ///
+    /// Populated only by the shell's read, never by [`Self::answered`]:
+    /// the database assigns it, and a window that has not been written
+    /// has no age yet.
+    pub created_at: crate::clock::Timestamp,
 }
 
 impl Window {
     /// Build the window one answered ask produces.
     ///
     /// An answer is only savable when the pipeline actually holds a plan and
-    /// a template; anything else returns `None`, and the caller must treat
-    /// that exactly like a failed save rather than inventing a half row.
-    /// `parent_id` starts empty — windows attach to nothing until something
-    /// decides they belong somewhere.
+    /// a template, so `artifacts` carries both or the call answers `None`,
+    /// and the caller must treat that exactly like a failed save rather than
+    /// inventing a half row. `parent_id` starts empty — windows attach to
+    /// nothing until something decides they belong somewhere. `created_at`
+    /// comes from the caller because only the moment of the insert knows it;
+    /// the shell reads the clock once, at the edge, like every other
+    /// time-dependent input.
     #[must_use]
     pub fn answered(
         id: Uuid,
         user_id: &str,
         request: &str,
-        plan: Option<&Plan>,
-        template: Option<&str>,
+        artifacts: Option<(&Plan, &str)>,
+        created_at: crate::clock::Timestamp,
     ) -> Option<Self> {
-        let plan = plan?;
-        let template = template?;
+        let (plan, template) = artifacts?;
 
         Some(Self {
             id,
@@ -66,8 +75,31 @@ impl Window {
             shape: serde_json::to_value(plan.shape.clone()).ok()?,
             template: template.to_owned(),
             name: None,
+            created_at,
         })
     }
+}
+
+/// True when the query's returned columns are the ones the stored shape
+/// describes.
+///
+/// Only the first row can be checked: the rows arrive as one JSON array,
+/// and every object row carries the same keys. An empty result — and a
+/// non-array, which the wrapping query should never produce — cannot be
+/// inspected, so it passes; a window whose rows are all gone looks like
+/// one that legitimately returns nothing. Key order does not matter;
+/// presence does.
+#[must_use]
+pub fn rows_match_shape(rows: &serde_json::Value, shape: &[Column]) -> bool {
+    let Some(row) = rows.as_array().and_then(|all| all.first()) else {
+        return true;
+    };
+    let Some(row) = row.as_object() else {
+        return false;
+    };
+    let stored: HashSet<&str> = shape.iter().map(|column| column.name.as_str()).collect();
+    let returned: HashSet<&str> = row.keys().map(String::as_str).collect();
+    stored == returned
 }
 
 /// One row of the tree as the palette shows it: the label data plus where the
@@ -194,9 +226,56 @@ pub fn normalize_name(input: &str) -> Result<Name, TooLong> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{normalize_name, tree, Entry, Name, TooLong, Window, NAME_LIMIT};
+    use super::{normalize_name, rows_match_shape, tree, Entry, Name, TooLong, Window, NAME_LIMIT};
     use crate::ask::plan::{Column, ColumnKind, Plan};
+    use serde_json::json;
     use uuid::Uuid;
+
+    fn column(nme: &str) -> Column {
+        Column {
+            name: nme.to_owned(),
+            kind: ColumnKind::Text,
+            description: String::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn keys_equal_to_the_stored_columns_pass_regardless_of_order() {
+        let shape = vec![column("name"), column("id")];
+        assert!(rows_match_shape(&json!([{ "id": 1, "name": "x" }]), &shape));
+    }
+
+    #[test]
+    fn a_renamed_column_fails() {
+        let shape = vec![column("name")];
+        assert!(!rows_match_shape(&json!([{ "nome": "x" }]), &shape));
+    }
+
+    #[test]
+    fn missing_and_extra_keys_fail() {
+        let shape = vec![column("name"), column("count")];
+        assert!(!rows_match_shape(&json!([{ "name": "x" }]), &shape));
+        assert!(!rows_match_shape(
+            &json!([{ "name": "x", "count": 1, "extra": 2 }]),
+            &shape
+        ));
+    }
+
+    #[test]
+    fn empty_and_non_array_results_cannot_drift() {
+        // Accepted fog: a window whose rows are all gone looks like one that
+        // legitimately returns nothing.
+        let shape = vec![column("name")];
+        assert!(rows_match_shape(&json!([]), &shape));
+        assert!(rows_match_shape(&json!("not an array"), &shape));
+    }
+
+    #[test]
+    fn an_empty_shape_demands_an_empty_row() {
+        assert!(rows_match_shape(&json!([{}]), &[]));
+        assert!(!rows_match_shape(&json!([{ "a": 1 }]), &[]));
+    }
 
     fn id(n: u8) -> Uuid {
         Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, n])
@@ -322,8 +401,8 @@ mod tests {
             id(9),
             "user_01",
             "open tasks",
-            Some(&plan()),
-            Some("<p>{{ rows | length }}</p>"),
+            Some((&plan(), "<p>{{ rows | length }}</p>")),
+            crate::clock::Timestamp::from_unix_seconds(0),
         )
         .unwrap();
 
@@ -340,10 +419,10 @@ mod tests {
 
     #[test]
     fn an_answer_without_its_artifacts_cannot_be_saved() {
-        let plan = plan();
-        assert!(Window::answered(id(9), "user_01", "ask", Some(&plan), None).is_none());
-        assert!(Window::answered(id(9), "user_01", "ask", None, Some("<p></p>")).is_none());
-        assert!(Window::answered(id(9), "user_01", "ask", None, None).is_none());
+        let at = crate::clock::Timestamp::from_unix_seconds(0);
+        // The paired parameter leaves no way to pass a plan without a
+        // template or the reverse; only the fully empty call can refuse.
+        assert!(Window::answered(id(9), "user_01", "ask", None, at).is_none());
     }
 
     #[test]

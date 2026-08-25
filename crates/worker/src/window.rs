@@ -56,7 +56,8 @@ pub async fn find(
     id: Uuid,
     user_id: &str,
 ) -> Result<Option<Window>, String> {
-    const FIND: &str = "select id, user_id, parent_id, request, sql, shape, template, name \
+    const FIND: &str = "select id, user_id, parent_id, request, sql, shape, template, name, \
+                        extract(epoch from created_at)::bigint as created_epoch \
                         from \"window\" where id = $1 and user_id = $2";
 
     let rows = client
@@ -77,6 +78,7 @@ pub async fn find(
         shape: row.get(5),
         template: row.get(6),
         name: row.get(7),
+        created_at: noal_core::clock::Timestamp::from_unix_seconds(row.get(8)),
     }))
 }
 

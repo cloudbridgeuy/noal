@@ -50,13 +50,24 @@ pub fn home(chrome: &Chrome) -> Markup {
 /// markup [`ask::oob_heading`] renders — one label everywhere means one
 /// heading element, not two that happen to agree.
 #[must_use]
-pub fn window(chrome: &Chrome, outcome: &Outcome) -> Markup {
+pub fn window(
+    chrome: &Chrome,
+    created_at: noal_core::clock::Timestamp,
+    outcome: &Outcome,
+) -> Markup {
     page(
         cut(&outcome.request).as_ref(),
         chrome,
         &html! {
             section #ask-result {
                 (ask::oob_heading(&heading_entry(chrome, outcome)))
+                p .saved-date {
+                    time datetime=(created_at.to_rfc3339()) {
+                        "Saved "
+                        (created_at.display_date())
+                        " · data re-read on arrival"
+                    }
+                }
                 (ask::outcome_view(outcome))
             }
         },
@@ -132,6 +143,11 @@ mod tests {
         }
     }
 
+    fn saved_at() -> noal_core::clock::Timestamp {
+        // 2026-02-01T10:20:30Z, fixed so assertions can name the strings.
+        noal_core::clock::Timestamp::from_unix_seconds(1_769_941_230)
+    }
+
     #[test]
     fn home_tells_an_anonymous_viewer_they_are_signed_out() {
         let rendered = home(&Chrome::anonymous()).into_string();
@@ -188,6 +204,7 @@ mod tests {
         );
         let rendered = window(
             &chrome,
+            saved_at(),
             &outcome(Verdict::Answered {
                 html: "<ul><li>a</li></ul>".into(),
             }),
@@ -209,6 +226,7 @@ mod tests {
         // renders — an `h2` with `id="ask-heading"`, never an `h1`.
         let rendered = window(
             &signed_in("someone@example.com"),
+            saved_at(),
             &outcome(Verdict::Answered {
                 html: String::new(),
             }),
@@ -243,6 +261,7 @@ mod tests {
 
         let rendered = window(
             &chrome,
+            saved_at(),
             &outcome(Verdict::Answered {
                 html: String::new(),
             }),
@@ -271,6 +290,7 @@ mod tests {
 
         let rendered = window(
             &chrome,
+            saved_at(),
             &outcome(Verdict::Answered {
                 html: String::new(),
             }),
@@ -292,12 +312,13 @@ mod tests {
     fn a_window_page_shows_the_refusal_without_a_retry_form() {
         let rendered = window(
             &signed_in("someone@example.com"),
+            saved_at(),
             &outcome(Verdict::Failed {
                 stage: Stage::Query,
             }),
         )
         .into_string();
-        assert!(rendered.contains("could not run the query"));
+        assert!(rendered.contains("the query it saved was refused"));
         // The palette carries the one ask form; the answer's own section
         // must not grow a second one.
         let start = rendered.find("<section id=\"ask-result\">").unwrap();
@@ -315,7 +336,7 @@ mod tests {
             html: String::new(),
         });
         o.request = "<script>alert(1)</script>".into();
-        let rendered = window(&signed_in("someone@example.com"), &o).into_string();
+        let rendered = window(&signed_in("someone@example.com"), saved_at(), &o).into_string();
         assert!(rendered.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     }
 
@@ -327,8 +348,41 @@ mod tests {
         let request = "x".repeat(80);
         let mut o = o;
         o.request = request.clone();
-        let rendered = window(&signed_in("someone@example.com"), &o).into_string();
+        let rendered = window(&signed_in("someone@example.com"), saved_at(), &o).into_string();
         let expected = format!("{}…", "x".repeat(60));
         assert!(rendered.contains(&format!(">{expected}</h2>")));
+    }
+
+    #[test]
+    fn a_window_page_dates_itself_under_the_title() {
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            saved_at(),
+            &outcome(Verdict::Answered {
+                html: String::new(),
+            }),
+        )
+        .into_string();
+        assert!(rendered.contains("Saved 1 Feb 2026"));
+        assert!(rendered.contains("data re-read on arrival"));
+        assert!(rendered.contains("datetime=\"2026-02-01T10:20:30Z\""));
+    }
+
+    #[test]
+    fn the_saved_date_line_sits_between_the_title_and_the_outcome() {
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            saved_at(),
+            &outcome(Verdict::Failed {
+                stage: Stage::Query,
+            }),
+        )
+        .into_string();
+        let title = rendered.find("</h2>").unwrap();
+        let line = rendered.find("data re-read on arrival").unwrap();
+        let outcome = rendered.find("ask-failed").unwrap();
+        assert!(title < line && line < outcome);
+        // No link: a mark that links nowhere is the defect this initiative removes.
+        assert!(!rendered[title..outcome].contains("href"));
     }
 }

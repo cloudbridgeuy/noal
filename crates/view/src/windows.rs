@@ -149,6 +149,16 @@ fn branch(node: &Node, current: &Current) -> Markup {
                 "Rename"
             }
             (rename_form(node, marked))
+            @if marked {
+                // Refresh is arrival at the window you stand on: an ordinary
+                // anchor, so the browser loads a fresh document and re-runs
+                // the window with no noal script at all. It sits on the
+                // marked row alone — re-running a window you are not standing
+                // on is a visit, and the entry beside it does that.
+                a href=(format!("/w/{}", node.entry.id))
+                  class="refresh"
+                  title="Run this window again" { "↻" }
+            }
             @if !node.children.is_empty() {
                 ul {
                     @for child in &node.children {
@@ -337,6 +347,40 @@ mod tests {
         let between = &rendered[parent..child];
         assert!(!between.contains("</li>"));
         assert!(!between.contains("</ul>"));
+    }
+
+    #[test]
+    fn only_the_current_row_carries_a_refresh_control() {
+        let windows = Windows::Tree(vec![
+            Node {
+                entry: entry("w-1", "first window"),
+                children: vec![Node {
+                    entry: entry("w-2", "second window"),
+                    children: Vec::new(),
+                }],
+            },
+            Node {
+                entry: entry("w-3", "third window"),
+                children: Vec::new(),
+            },
+        ]);
+        let rendered = tree(&windows, &Current::Window(id("w-2"))).into_string();
+        assert_eq!(rendered.matches("class=\"refresh\"").count(), 1);
+        let url = format!("/w/{}", id("w-2"));
+        assert!(rendered.contains(&format!("href=\"{url}\" class=\"refresh\"")));
+        assert!(rendered.contains("title=\"Run this window again\""));
+    }
+
+    #[test]
+    fn home_and_non_current_windows_have_no_refresh_control() {
+        let windows = Windows::Tree(vec![Node {
+            entry: entry("w-1", "first window"),
+            children: Vec::new(),
+        }]);
+        let at_home = tree(&windows, &Current::Home).into_string();
+        assert!(!at_home.contains("class=\"refresh\""));
+        let elsewhere = tree(&windows, &Current::Window(id("w-9"))).into_string();
+        assert!(!elsewhere.contains("class=\"refresh\""));
     }
 
     #[test]
