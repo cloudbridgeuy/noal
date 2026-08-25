@@ -141,6 +141,26 @@ the query the ask ends rather than retrying with the model's help.
 
 ---
 
+## A follow-up ask refines the window it came from
+
+**Chosen over** a hidden form field carrying the parent id, which would go
+stale from the second ask onward, and over dropping to a root ask when the
+named window does not exist, which would answer a question nobody asked.
+
+Dated 2026-08-25. The address bar is the one copy of which window the user
+stands on: an ask made while standing on a window (`HX-Current-URL` naming
+`/w/<segment>`) is planned from that window's query and rendered in its
+presentation. An ask made at the root carries nothing. There is no clear
+control — a fresh line of enquiry starts at the root.
+
+A well-formed segment that cannot be a uuid, names no row, or names another
+user's row refuses as a 404 toast rather than being answered from the root:
+one status and one wording for every miss keep the route from becoming a
+probe for which windows exist. The saved child records its parent, so the
+tree shows the refinement; depth is the immediate parent only.
+
+---
+
 ## The palette and the toast region are page chrome
 
 **Chosen over** wiring the ask form itself to notice a failed request, over
