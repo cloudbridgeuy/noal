@@ -41,6 +41,27 @@ impl Timestamp {
     pub const fn is_after(self, other: Self) -> bool {
         self.0 > other.0
     }
+
+    /// The stored instant as an RFC 3339 timestamp in UTC, second precision.
+    ///
+    /// Pure formatting of the value this newtype already holds; reading no
+    /// clock keeps `state::now()` the only place noal asks what time it is.
+    #[must_use]
+    pub fn to_rfc3339(self) -> String {
+        let instant =
+            chrono::DateTime::from_timestamp(self.0, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
+        instant.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    /// The stored date alone, UTC, for a reader deciding whether a window is
+    /// old or recent. Day granularity: noal holds no viewer timezone, and the
+    /// full instant stays available through [`Self::to_rfc3339`].
+    #[must_use]
+    pub fn display_date(self) -> String {
+        let instant =
+            chrono::DateTime::from_timestamp(self.0, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
+        instant.format("%-d %b %Y").to_string()
+    }
 }
 
 #[cfg(test)]
@@ -80,5 +101,24 @@ mod tests {
     #[test]
     fn ordering_follows_the_instant() {
         assert!(Timestamp::from_unix_seconds(1) < Timestamp::from_unix_seconds(2));
+    }
+
+    #[test]
+    fn display_date_is_day_granular_utc_without_leading_zero() {
+        // 2026-08-21T14:03:09Z — day only, month abbreviated, no zero padding.
+        let stamp = Timestamp::from_unix_seconds(1_787_320_989);
+        assert_eq!(stamp.display_date(), "21 Aug 2026");
+    }
+
+    #[test]
+    fn display_date_handles_the_first_of_a_month() {
+        let stamp = Timestamp::from_unix_seconds(1_746_057_600); // 2025-05-01T00:00Z
+        assert_eq!(stamp.display_date(), "1 May 2025");
+    }
+
+    #[test]
+    fn rfc3339_carries_the_full_instant_in_utc() {
+        let stamp = Timestamp::from_unix_seconds(1_787_320_989);
+        assert_eq!(stamp.to_rfc3339(), "2026-08-21T14:03:09Z");
     }
 }

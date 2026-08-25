@@ -188,8 +188,12 @@ async fn save_window(
         id,
         &viewer.user_id,
         &outcome.request,
-        outcome.debug.plan.as_ref(),
-        outcome.debug.template.as_deref(),
+        outcome
+            .debug
+            .plan
+            .as_ref()
+            .zip(outcome.debug.template.as_deref()),
+        crate::state::now(),
     )
     .ok_or_else(|| "an answered ask held no plan and template".to_owned())?;
 

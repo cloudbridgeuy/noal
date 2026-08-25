@@ -14,9 +14,10 @@ use crate::ask::plan::{Column, Plan};
 
 /// One saved window: everything that recreates its view.
 ///
-/// `created_at` is deliberately absent: it is assigned by the database on
-/// insert and only ever used for ordering there, so no code needs to carry a
-/// value it cannot set.
+/// `created_at` is assigned by the database on insert and carried by
+/// [`Window`] once read back: the window page shows the window's age, so
+/// the value has a reader and must travel with the row. Nothing in noal
+/// writes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
     /// The window's identity. Drawn by the shell, so a failed insert wastes
@@ -36,26 +37,34 @@ pub struct Window {
     pub template: String,
     /// The name the viewer gave the window. Nothing writes one yet.
     pub name: Option<String>,
+    /// When the ask that produced this window succeeded.
+    ///
+    /// Populated only by the shell's read, never by [`Self::answered`]:
+    /// the database assigns it, and a window that has not been written
+    /// has no age yet.
+    pub created_at: crate::clock::Timestamp,
 }
 
 impl Window {
     /// Build the window one answered ask produces.
     ///
     /// An answer is only savable when the pipeline actually holds a plan and
-    /// a template; anything else returns `None`, and the caller must treat
-    /// that exactly like a failed save rather than inventing a half row.
-    /// `parent_id` starts empty — windows attach to nothing until something
-    /// decides they belong somewhere.
+    /// a template, so `artifacts` carries both or the call answers `None`,
+    /// and the caller must treat that exactly like a failed save rather than
+    /// inventing a half row. `parent_id` starts empty — windows attach to
+    /// nothing until something decides they belong somewhere. `created_at`
+    /// comes from the caller because only the moment of the insert knows it;
+    /// the shell reads the clock once, at the edge, like every other
+    /// time-dependent input.
     #[must_use]
     pub fn answered(
         id: Uuid,
         user_id: &str,
         request: &str,
-        plan: Option<&Plan>,
-        template: Option<&str>,
+        artifacts: Option<(&Plan, &str)>,
+        created_at: crate::clock::Timestamp,
     ) -> Option<Self> {
-        let plan = plan?;
-        let template = template?;
+        let (plan, template) = artifacts?;
 
         Some(Self {
             id,
@@ -66,6 +75,7 @@ impl Window {
             shape: serde_json::to_value(plan.shape.clone()).ok()?,
             template: template.to_owned(),
             name: None,
+            created_at,
         })
     }
 }
@@ -342,8 +352,8 @@ mod tests {
             id(9),
             "user_01",
             "open tasks",
-            Some(&plan()),
-            Some("<p>{{ rows | length }}</p>"),
+            Some((&plan(), "<p>{{ rows | length }}</p>")),
+            crate::clock::Timestamp::from_unix_seconds(0),
         )
         .unwrap();
 
@@ -360,9 +370,9 @@ mod tests {
 
     #[test]
     fn an_answer_without_its_artifacts_cannot_be_saved() {
-        let plan = plan();
-        assert!(Window::answered(id(9), "user_01", "ask", Some(&plan), None).is_none());
-        assert!(Window::answered(id(9), "user_01", "ask", None, Some("<p></p>")).is_none());
-        assert!(Window::answered(id(9), "user_01", "ask", None, None).is_none());
+        let at = crate::clock::Timestamp::from_unix_seconds(0);
+        // The paired parameter leaves no way to pass a plan without a
+        // template or the reverse; only the fully empty call can refuse.
+        assert!(Window::answered(id(9), "user_01", "ask", None, at).is_none());
     }
 }
