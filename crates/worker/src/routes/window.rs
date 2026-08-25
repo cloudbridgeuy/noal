@@ -55,7 +55,7 @@ pub async fn show(
     };
     Ok(respond::html(
         StatusCode::OK,
-        noal_view::pages::window(&chrome, &outcome),
+        noal_view::pages::window(&chrome, window.created_at, &outcome),
     ))
 }
 

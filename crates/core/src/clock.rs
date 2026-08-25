@@ -48,8 +48,8 @@ impl Timestamp {
     /// clock keeps `state::now()` the only place noal asks what time it is.
     #[must_use]
     pub fn to_rfc3339(self) -> String {
-        let instant = chrono::DateTime::from_timestamp(self.0, 0)
-            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+        let instant =
+            chrono::DateTime::from_timestamp(self.0, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
         instant.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 
@@ -58,8 +58,8 @@ impl Timestamp {
     /// full instant stays available through [`Self::to_rfc3339`].
     #[must_use]
     pub fn display_date(self) -> String {
-        let instant = chrono::DateTime::from_timestamp(self.0, 0)
-            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+        let instant =
+            chrono::DateTime::from_timestamp(self.0, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
         instant.format("%-d %b %Y").to_string()
     }
 }
