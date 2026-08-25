@@ -93,8 +93,6 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Start an ask: the first step is always to plan.
-    #[must_use]
-    /// Start an ask: the first step is always to plan.
     ///
     /// `parent` is the window the address bar names, or `None` at the root:
     /// a follow-up is not a different machine from an ask, only an argument

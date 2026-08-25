@@ -57,28 +57,40 @@ impl Window {
     /// moment of the insert knows it; the shell reads the clock once, at the
     /// edge, like every other time-dependent input.
     #[must_use]
-    pub fn answered(
-        id: Uuid,
-        parent_id: Option<Uuid>,
-        user_id: &str,
-        request: &str,
-        artifacts: Option<(&Plan, &str)>,
-        created_at: crate::clock::Timestamp,
-    ) -> Option<Self> {
-        let (plan, template) = artifacts?;
+    pub fn answered(new: NewWindow) -> Option<Self> {
+        let (plan, template) = new.artifacts?;
 
         Some(Self {
-            id,
-            user_id: user_id.to_owned(),
-            parent_id,
-            request: request.to_owned(),
+            id: new.id,
+            parent_id: new.parent_id,
+            user_id: new.user_id,
+            request: new.request,
             sql: plan.sql.clone(),
             shape: serde_json::to_value(plan.shape.clone()).ok()?,
             template: template.to_owned(),
             name: None,
-            created_at,
+            created_at: new.created_at,
         })
     }
+}
+
+/// The values one answered ask saves, as a struct rather than an argument
+/// list: seven parameters is past what a call site can read by position.
+#[derive(Debug)]
+pub struct NewWindow<'a> {
+    /// The window's identity, drawn by the shell.
+    pub id: Uuid,
+    /// The window this ask was made from, when the address bar named one.
+    pub parent_id: Option<Uuid>,
+    /// The WorkOS user the window belongs to.
+    pub user_id: String,
+    /// What the user typed.
+    pub request: String,
+    /// The pipeline's plan and template together, or `None` if the ask
+    /// produced neither fully.
+    pub artifacts: Option<(&'a Plan, &'a str)>,
+    /// When the ask succeeded; read once at the shell's edge.
+    pub created_at: crate::clock::Timestamp,
 }
 
 /// True when the query's returned columns are the ones the stored shape
@@ -227,7 +239,9 @@ pub fn normalize_name(input: &str) -> Result<Name, TooLong> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{normalize_name, rows_match_shape, tree, Entry, Name, TooLong, Window, NAME_LIMIT};
+    use super::{
+        normalize_name, rows_match_shape, tree, Entry, Name, NewWindow, TooLong, Window, NAME_LIMIT,
+    };
     use crate::ask::plan::{Column, ColumnKind, Plan};
     use serde_json::json;
     use uuid::Uuid;
@@ -398,14 +412,14 @@ mod tests {
 
     #[test]
     fn an_answered_ask_becomes_a_savable_window() {
-        let window = Window::answered(
-            id(9),
-            None,
-            "user_01",
-            "open tasks",
-            Some((&plan(), "<p>{{ rows | length }}</p>")),
-            crate::clock::Timestamp::from_unix_seconds(0),
-        )
+        let window = Window::answered(NewWindow {
+            id: id(9),
+            parent_id: None,
+            user_id: "user_01".into(),
+            request: "open tasks".into(),
+            artifacts: Some((&plan(), "<p>{{ rows | length }}</p>")),
+            created_at: crate::clock::Timestamp::from_unix_seconds(0),
+        })
         .unwrap();
 
         assert_eq!(window.id, id(9));
@@ -422,24 +436,31 @@ mod tests {
     #[test]
     fn a_follow_up_records_the_window_it_refines() {
         let parent = id(4);
-        let window = Window::answered(
-            id(9),
-            Some(parent),
-            "user_01",
-            "only the blockers",
-            Some((&plan(), "<p></p>")),
-            crate::clock::Timestamp::from_unix_seconds(0),
-        )
+        let window = Window::answered(NewWindow {
+            id: id(9),
+            parent_id: Some(parent),
+            user_id: "user_01".into(),
+            request: "only the blockers".into(),
+            artifacts: Some((&plan(), "<p></p>")),
+            created_at: crate::clock::Timestamp::from_unix_seconds(0),
+        })
         .unwrap();
         assert_eq!(window.parent_id, Some(parent));
     }
 
     #[test]
     fn an_answer_without_its_artifacts_cannot_be_saved() {
-        let at = crate::clock::Timestamp::from_unix_seconds(0);
         // The paired parameter leaves no way to pass a plan without a
         // template or the reverse; only the fully empty call can refuse.
-        assert!(Window::answered(id(9), None, "user_01", "ask", None, at).is_none());
+        let new = || NewWindow {
+            id: id(9),
+            parent_id: None,
+            user_id: "user_01".into(),
+            request: "ask".into(),
+            artifacts: None,
+            created_at: crate::clock::Timestamp::from_unix_seconds(0),
+        };
+        assert!(Window::answered(new()).is_none());
     }
 
     #[test]
