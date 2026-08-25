@@ -93,6 +93,18 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+impl Node {
+    /// This node and every node under it, depth-first, without nesting.
+    #[must_use]
+    pub fn flatten(&self) -> Vec<&Node> {
+        let mut all = vec![self];
+        for child in &self.children {
+            all.extend(child.flatten());
+        }
+        all
+    }
+}
+
 /// Nest flat entries into a tree.
 ///
 /// The result is the root's children — there is no synthetic root; Home is
@@ -374,5 +386,22 @@ mod tests {
         // and feeding it through again changes nothing.
         assert_eq!(normalize_name(&stored), Ok(Name::Set(stored.clone())));
         assert_eq!(stored, "Weekly report");
+    }
+
+    #[test]
+    fn flattening_yields_every_node_depth_first_without_nesting() {
+        let nodes = tree(&[
+            entry(1, None),
+            entry(2, Some(id(1))),
+            entry(3, Some(id(2))),
+            entry(4, None),
+        ]);
+
+        let flat: Vec<u8> = nodes
+            .iter()
+            .flat_map(crate::window::Node::flatten)
+            .map(|node| *node.entry.id.as_bytes().last().unwrap())
+            .collect();
+        assert_eq!(flat, vec![1, 2, 3, 4]);
     }
 }

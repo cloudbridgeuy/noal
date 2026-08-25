@@ -10,7 +10,7 @@ use noal_core::ask::outcome::Outcome;
 
 use crate::ask;
 use crate::layout::{page, Chrome, Viewer};
-use crate::windows::cut;
+use crate::windows::{cut, Windows};
 
 /// The landing page.
 ///
@@ -44,6 +44,11 @@ pub fn home(chrome: &Chrome) -> Markup {
 /// from the tree, a pushed URL, and a reload all land on the same complete
 /// page. The palette marks this window's row, and the chrome carries the
 /// debug payload so the Debug tab shows what produced the view.
+///
+/// The heading is an `h2` carrying [`crate::ask`]'s one heading id, not an
+/// `h1`, so a rename response can replace it out of band with exactly the
+/// markup [`ask::oob_heading`] renders — one label everywhere means one
+/// heading element, not two that happen to agree.
 #[must_use]
 pub fn window(chrome: &Chrome, outcome: &Outcome) -> Markup {
     page(
@@ -51,13 +56,35 @@ pub fn window(chrome: &Chrome, outcome: &Outcome) -> Markup {
         chrome,
         &html! {
             section #ask-result {
-                h1 { (cut(&outcome.request)) }
+                (ask::oob_heading(&heading_entry(chrome, outcome)))
                 (ask::outcome_view(outcome))
             }
         },
     )
 }
 
+/// The entry the window page's heading renders: its tree row when the tree
+/// holds one for the window being viewed, otherwise one built from the
+/// reopened request alone.
+///
+/// Pairing by the current id rather than by the request text means two
+/// windows asked for the same thing cannot borrow each other's names.
+fn heading_entry(chrome: &Chrome, outcome: &Outcome) -> noal_core::window::Entry {
+    let fallback = || noal_core::window::Entry {
+        id: chrome.current.window_id().unwrap_or_default(),
+        parent_id: None,
+        request: outcome.request.clone(),
+        name: None,
+    };
+    match (&chrome.windows, chrome.current.window_id()) {
+        (Windows::Tree(nodes), Some(id)) => nodes
+            .iter()
+            .flat_map(crate::windows::Node::flatten)
+            .find(|node| node.entry.id == id)
+            .map_or_else(fallback, |node| node.entry.clone()),
+        _ => fallback(),
+    }
+}
 /// A page shown when a request could not be served.
 ///
 /// The message is written by noal, never echoed from user input, so a failure
@@ -176,6 +203,29 @@ mod tests {
     }
 
     #[test]
+    fn a_window_pages_heading_is_the_one_replaceable_h2() {
+        // The rename response replaces exactly this element out of band, so
+        // the page must carry the same id and markup `ask::oob_heading`
+        // renders — an `h2` with `id="ask-heading"`, never an `h1`.
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            &outcome(Verdict::Answered {
+                html: String::new(),
+            }),
+        )
+        .into_string();
+
+        let start = rendered.find("<section id=\"ask-result\">").unwrap();
+        let section = &rendered[start..];
+        assert!(section.starts_with("<section id=\"ask-result\"><h2 id=\"ask-heading\""));
+        assert!(section.contains("<h2 id=\"ask-heading\""));
+        assert!(
+            !rendered.contains("<h1>open tasks</h1>"),
+            "no second heading"
+        );
+    }
+
+    #[test]
     fn a_window_page_marks_its_own_row_in_the_tree() {
         let mut entry = Entry {
             id: uuid::Uuid::from_bytes([7; 16]),
@@ -200,6 +250,42 @@ mod tests {
         .into_string();
         assert!(rendered.contains("<li id=\"window-current\"><a class=\"window-label\" href=\"/w/"));
         assert_eq!(rendered.matches("id=\"window-current\"").count(), 1);
+    }
+
+    #[test]
+    fn a_window_pages_heading_shows_the_stored_name_over_the_cut() {
+        // One label everywhere: the page heading and the tree row both render
+        // name-or-cut from the same stored value.
+        let entry = Entry {
+            id: uuid::Uuid::from_bytes([7; 16]),
+            parent_id: None,
+            request: "open tasks under the Render MVP epic with many words".into(),
+            name: Some("Weekly report".into()),
+        };
+        let mut chrome = signed_in("someone@example.com");
+        chrome.windows = Windows::Tree(vec![Node {
+            entry,
+            children: Vec::new(),
+        }]);
+        chrome.current = Current::Window(uuid::Uuid::from_bytes([7; 16]));
+
+        let rendered = window(
+            &chrome,
+            &outcome(Verdict::Answered {
+                html: String::new(),
+            }),
+        )
+        .into_string();
+        let at = rendered.find("id=\"ask-heading\"").unwrap();
+        let tag =
+            &rendered[rendered[..at].rfind('<').unwrap()..rendered[at..].find('>').unwrap() + at];
+        assert!(tag.starts_with("<h2 "), "the heading is an h2: {tag}");
+        assert!(
+            tag.contains("title="),
+            "the full request rides in the title: {tag}"
+        );
+        assert!(rendered.contains(">Weekly report</h2>"));
+        assert!(!rendered.contains("…</h2>"));
     }
 
     #[test]
@@ -231,5 +317,18 @@ mod tests {
         o.request = "<script>alert(1)</script>".into();
         let rendered = window(&signed_in("someone@example.com"), &o).into_string();
         assert!(rendered.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    }
+
+    #[test]
+    fn a_window_pages_heading_falls_back_to_the_cut_when_unnamed() {
+        let o = outcome(Verdict::Answered {
+            html: String::new(),
+        });
+        let request = "x".repeat(80);
+        let mut o = o;
+        o.request = request.clone();
+        let rendered = window(&signed_in("someone@example.com"), &o).into_string();
+        let expected = format!("{}…", "x".repeat(60));
+        assert!(rendered.contains(&format!(">{expected}</h2>")));
     }
 }

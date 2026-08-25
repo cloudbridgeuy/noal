@@ -66,6 +66,17 @@ pub enum Current {
     Window(uuid::Uuid),
 }
 
+impl Current {
+    /// The id of the window being viewed, or `None` on Home.
+    #[must_use]
+    pub fn window_id(&self) -> Option<uuid::Uuid> {
+        match self {
+            Current::Home => None,
+            Current::Window(id) => Some(*id),
+        }
+    }
+}
+
 /// Render the Windows tab: the Home row, then either the saved tree or the
 /// line explaining that the tree could not be read.
 #[must_use]
