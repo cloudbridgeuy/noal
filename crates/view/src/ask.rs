@@ -4,8 +4,11 @@
 //! template arrives as a string the view places verbatim, because the view
 //! already rendered it through Tera with autoescape on.
 
+use std::borrow::Cow;
+
 use maud::{html, Markup, PreEscaped};
 use noal_core::ask::outcome::{Outcome, Stage, Verdict};
+pub use noal_core::window::Entry as WindowEntry;
 
 /// The form that starts an ask. Submitting it replaces `#ask-result`, wherever
 /// on the page that lives, leaving the form itself in place.
@@ -16,6 +19,10 @@ use noal_core::ask::outcome::{Outcome, Stage, Verdict};
 /// button"` disables the submit button for the same span, as the visible
 /// sign that an ask is already running; the input is left out on purpose so
 /// the user can keep editing their request while it runs.
+///
+/// The heading carries `id="ask-heading"` so a rename of the window being
+/// viewed can replace exactly this element out of band — see
+/// [`oob_heading`].
 #[must_use]
 pub fn form() -> Markup {
     html! {
@@ -95,12 +102,40 @@ pub fn outcome_view(outcome: &Outcome) -> Markup {
 pub fn answer(request: &str, html: &str, saved: Saved) -> Markup {
     html! {
         section #ask-result {
-            h2 { (request) }
+            h2 #ask-heading { (request) }
             div .ask-answer { (PreEscaped(html)) }
             @if saved == Saved::No {
                 p #ask-toast role="status" { "The window was not saved." }
             }
         }
+    }
+}
+
+/// The heading of a window page, renderable on its own.
+///
+/// The label is the stored name when there is one, otherwise the cut request —
+/// the same [`crate::windows`] rule the tree rows follow, so a rename cannot
+/// leave the page and its row disagreeing. A response that swaps the tree
+/// while this window is the one being viewed appends this beside itself,
+/// marked for htmx to replace the standing `#ask-result` heading out of band;
+/// anywhere else it has no business appearing, because nothing here targets
+/// the element it would replace.
+#[must_use]
+pub fn oob_heading(entry: &WindowEntry) -> Markup {
+    html! {
+        h2 #ask-heading hx-swap-oob="outerHTML" title=(entry.request) {
+            (heading_label(entry))
+        }
+    }
+}
+
+/// What the heading shows: the viewer's name when there is one, otherwise the
+/// cut request. One free function so [`answer`]'s inline `<h2>` and
+/// [`oob_heading`] cannot drift apart.
+fn heading_label(entry: &WindowEntry) -> Cow<'_, str> {
+    match &entry.name {
+        Some(name) => Cow::Borrowed(name.as_str()),
+        None => crate::windows::cut(&entry.request),
     }
 }
 
@@ -120,8 +155,18 @@ pub const fn failure_text(stage: Stage) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, failure_text, form, greeting, outcome_view, Saved};
+    use super::{answer, failure_text, form, greeting, oob_heading, outcome_view, Saved};
     use noal_core::ask::outcome::{Debug, Origin, Outcome, Stage, Verdict};
+    use noal_core::window::Entry;
+
+    fn entry(request: &str, name: Option<&str>) -> Entry {
+        Entry {
+            id: uuid::Uuid::from_bytes([9; 16]),
+            parent_id: None,
+            request: request.to_owned(),
+            name: name.map(str::to_owned),
+        }
+    }
 
     fn outcome(verdict: Verdict) -> Outcome {
         Outcome {
@@ -193,7 +238,7 @@ mod tests {
     #[test]
     fn the_request_is_escaped() {
         let html = answer("<img src=x>", "", Saved::Yes).into_string();
-        assert!(html.contains("<h2>&lt;img src=x&gt;</h2>"));
+        assert!(html.contains("<h2 id=\"ask-heading\">&lt;img src=x&gt;</h2>"));
     }
 
     #[test]
@@ -236,5 +281,43 @@ mod tests {
             !html.contains("hx-post"),
             "the retry form belongs to the caller"
         );
+    }
+
+    // The standalone heading. A rename of the window being viewed appends it
+    // to the fresh tree, marked for an out-of-band swap; these string tests
+    // pin the markup that swap depends on.
+
+    #[test]
+    fn the_oob_heading_carries_the_name_over_the_cut() {
+        let html = oob_heading(&entry(
+            "open tasks under the Render MVP epic with many words",
+            Some("Weekly report"),
+        ))
+        .into_string();
+        assert!(html.contains(">Weekly report</h2>"));
+        assert!(!html.contains("…"), "a stored name is never cut");
+    }
+
+    #[test]
+    fn the_oob_heading_falls_back_to_the_cut_request() {
+        let request = "x".repeat(80);
+        let html = oob_heading(&entry(&request, None)).into_string();
+        let expected = format!("{}…", "x".repeat(60));
+        assert!(html.contains(&format!(">{expected}</h2>")));
+    }
+
+    #[test]
+    fn the_oob_heading_escapes_its_label_and_titles_the_full_request() {
+        let request = "open <b>tasks</b>";
+        let html = oob_heading(&entry(request, Some("<i>name</i>"))).into_string();
+        assert!(html.contains("&lt;i&gt;name&lt;/i&gt;"));
+        assert!(html.contains(r#"title="open &lt;b&gt;tasks&lt;/b&gt;""#));
+        assert!(!html.contains("<i>"), "nothing renders as markup");
+    }
+
+    #[test]
+    fn the_oob_heading_is_marked_to_replace_the_standing_ask_heading() {
+        let html = oob_heading(&entry("open tasks", None)).into_string();
+        assert!(html.starts_with(r#"<h2 id="ask-heading" hx-swap-oob="outerHTML""#));
     }
 }

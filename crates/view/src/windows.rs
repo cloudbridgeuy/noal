@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 
 use maud::{html, Markup};
-pub use noal_core::window::{Entry, Node};
+pub use noal_core::window::{normalize_name, Entry, Name as NormalizedName, Node, NAME_LIMIT};
 
 /// The most characters a window label shows before it is cut.
 ///
@@ -66,6 +66,17 @@ pub enum Current {
     Window(uuid::Uuid),
 }
 
+impl Current {
+    /// The id of the window being viewed, or `None` on Home.
+    #[must_use]
+    pub fn window_id(&self) -> Option<uuid::Uuid> {
+        match self {
+            Current::Home => None,
+            Current::Window(id) => Some(*id),
+        }
+    }
+}
+
 /// Render the Windows tab: the Home row, then either the saved tree or the
 /// line explaining that the tree could not be read.
 #[must_use]
@@ -118,13 +129,26 @@ fn home_row(current: &Current) -> Markup {
 }
 
 /// One window row with its nested children, if it has any.
+///
+/// The row holds two controls: the label link, and a rename form hidden
+/// inside the same row. The form is per-row markup, not fetched — no route
+/// serves it — so opening the editor is only unhiding what is already there.
+/// The current-window marker input rides on the current row alone; scripts
+/// read it to learn which window the viewer is looking at.
 fn branch(node: &Node, current: &Current) -> Markup {
     let marked = matches!(current, Current::Window(id) if *id == node.entry.id);
     html! {
         li id=[marked.then_some("window-current")] {
-            a href=(format!("/w/{}", node.entry.id)) title=(node.entry.request) {
+            a .window-label href=(format!("/w/{}", node.entry.id)) title=(node.entry.request) {
                 (label(&node.entry))
             }
+            // The opener stays outside the form: it must be clickable while
+            // the form it opens is still hidden.
+            button .window-rename-open type="button" aria-haspopup="dialog"
+                title="Rename" {
+                "Rename"
+            }
+            (rename_form(node, marked))
             @if !node.children.is_empty() {
                 ul {
                     @for child in &node.children {
@@ -136,7 +160,39 @@ fn branch(node: &Node, current: &Current) -> Markup {
     }
 }
 
+/// The hidden rename form of one row.
+///
+/// It pre-fills from the stored name only — never the derived cut — because
+/// an unchanged submit must not write an invention into the column. Empty
+/// submit clears the name, which is why `required` stays off. The label and
+/// the buttons inside carry the accessible names for the edit they perform.
+///
+/// The current row's form carries a `current-window` field; scripts and the
+/// route read it to learn that the renamed window is the one being viewed.
+fn rename_form(node: &Node, marked: bool) -> Markup {
+    let id = node.entry.id;
+    html! {
+        form .window-rename hidden hx-post=(format!("/w/{id}/name"))
+            hx-target="#window-tree" hx-swap="outerHTML" {
+            @if marked {
+                input type="hidden" name="current-window" value="true" {}
+            }
+            label for=(rename_input_id(id)) { "Name this window" }
+            input #(rename_input_id(id)) name="name" type="text"
+                value=[node.entry.name.as_deref()];
+            button .window-rename-submit type="submit" { "Save name" }
+            button .window-rename-cancel type="button" { "Cancel" }
+        }
+    }
+}
+
+/// A stable DOM id for one row's rename input.
+fn rename_input_id(id: uuid::Uuid) -> String {
+    format!("window-name-{}", id.as_simple())
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{cut, tree, Current, Entry, Node, Windows};
 
@@ -303,5 +359,166 @@ mod tests {
 
         let unavailable = super::oob_tree(&Windows::Unavailable, &Current::Home).into_string();
         assert!(unavailable.contains("Saved windows could not be read."));
+    }
+
+    // The rename control ships inside every row. These string tests pin the
+    // markup the overlay script depends on: a hidden form per row, opened by
+    // its own button, with the accessible names a screen reader needs.
+
+    #[test]
+    fn every_row_ships_a_hidden_rename_form_that_posts_to_the_window_s_route() {
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Home,
+        )
+        .into_string();
+        // The tree holds exactly one kind of form; inspect its opening tag.
+        let tag = opening_form_tag(&rendered);
+        assert!(tag.contains("hidden"));
+        assert!(tag.contains("hx-post="));
+        assert!(tag.contains("/name"));
+        // The form targets the tree itself, so a saved rename swaps the fresh
+        // tree in place and the palette never has to close.
+        assert!(tag.contains(r##"hx-target="#window-tree""##));
+    }
+
+    /// Pull the opening `<form ...>` tag of the rendered tree's one form.
+    fn opening_form_tag(rendered: &str) -> &str {
+        let start = rendered.find("<form").unwrap();
+        let end = start + rendered[start..].find('>').unwrap();
+        &rendered[start..=end]
+    }
+
+    #[test]
+    fn the_rename_input_pre_fills_with_the_stored_name_never_the_cut() {
+        let mut named = entry(
+            "w-1",
+            "open tasks under the Render MVP epic with many words",
+        );
+        named.name = Some("Weekly report".to_owned());
+        let unnamed = entry("w-2", "second window");
+
+        let rendered = tree(
+            &Windows::Tree(vec![
+                Node {
+                    entry: named,
+                    children: Vec::new(),
+                },
+                Node {
+                    entry: unnamed,
+                    children: Vec::new(),
+                },
+            ]),
+            &Current::Home,
+        )
+        .into_string();
+
+        assert!(rendered.contains(r#"value="Weekly report""#));
+        // No stored name, no value attribute at all — not the cut request.
+        assert!(!rendered.contains("value=\"second window\""));
+        assert!(!rendered.contains("…</input>") && !rendered.contains("value=\"open tasks under"));
+    }
+
+    #[test]
+    fn the_rename_controls_carry_accessible_names() {
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Home,
+        )
+        .into_string();
+
+        // The opener announces what it opens; it sits beside the form, so a
+        // click can reach it while the form is hidden.
+        let open_tag = opening_button_tag(&rendered, "window-rename-open");
+        assert!(open_tag.contains(r#"aria-haspopup="dialog""#));
+        let open_at = rendered.find("window-rename-open").unwrap();
+        let form_open = rendered[open_at..].find("<form").unwrap();
+        assert!(form_open > 0, "the form follows its opener");
+        // The input has a real label bound by matching for/id, and the
+        // submit button is text a screen reader can name.
+        assert!(rendered.contains(r#"<label for="window-name-"#));
+        let label_at = rendered.find(r#"for="window-name-"#).unwrap();
+        let id_at = rendered[label_at..].find("window-name-").unwrap() + label_at;
+        let input_id = &rendered[id_at..rendered[id_at..].find('"').unwrap() + id_at];
+        assert!(rendered.contains(&format!("id=\"{input_id}\"")));
+        assert!(rendered.contains(">Save name</button>"));
+        assert!(rendered.contains(">Cancel</button>"));
+    }
+
+    #[test]
+    fn the_rename_opener_is_visible_outside_its_hidden_form() {
+        // The opener must be clickable while the form is still hidden, so
+        // it cannot live inside the element the button's own click reveals.
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Home,
+        )
+        .into_string();
+        let open_at = rendered.find("window-rename-open").unwrap();
+        let form_open = rendered.find("<form").unwrap();
+        let form_close = rendered.find("</form>").unwrap();
+        assert!(open_at < form_open || open_at > form_close);
+    }
+
+    /// Pull the opening `<button ...>` tag carrying `class_needle`.
+    fn opening_button_tag<'a>(rendered: &'a str, class_needle: &'a str) -> &'a str {
+        let at = rendered.find(class_needle).unwrap();
+        let start = rendered[..at].rfind('<').unwrap();
+        let end = at + rendered[at..].find('>').unwrap();
+        &rendered[start..=end]
+    }
+
+    #[test]
+    fn only_the_current_row_s_form_carries_the_current_window_marker() {
+        let windows = Windows::Tree(vec![
+            Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            },
+            Node {
+                entry: entry("w-2", "second window"),
+                children: Vec::new(),
+            },
+        ]);
+
+        let rendered = tree(&windows, &Current::Window(id("w-2"))).into_string();
+        assert_eq!(
+            rendered.matches("current-window").count(),
+            1,
+            "the marker rides on exactly one form"
+        );
+        // The marker rides on the form of the row that is current: the
+        // nearest opening tag before it posts to that row's own route.
+        let marker_at = rendered.find("current-window").unwrap();
+        let owner = rendered[..marker_at].rfind("<form").unwrap();
+        assert!(rendered[owner..marker_at].contains(&format!("/w/{}/name", id("w-2"))));
+
+        // And on Home no form carries it.
+        let home = tree(&windows, &Current::Home).into_string();
+        assert!(!home.contains("current-window"));
+    }
+
+    #[test]
+    fn the_rename_form_is_a_sibling_of_the_label_link_not_inside_it() {
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Home,
+        )
+        .into_string();
+        let link_close = rendered.find("</a>").unwrap();
+        let form_open = rendered.find("<form").unwrap();
+        assert!(form_open > link_close);
     }
 }

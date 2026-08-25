@@ -93,6 +93,18 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+impl Node {
+    /// This node and every node under it, depth-first, without nesting.
+    #[must_use]
+    pub fn flatten(&self) -> Vec<&Node> {
+        let mut all = vec![self];
+        for child in &self.children {
+            all.extend(child.flatten());
+        }
+        all
+    }
+}
+
 /// Nest flat entries into a tree.
 ///
 /// The result is the root's children — there is no synthetic root; Home is
@@ -142,10 +154,47 @@ fn assemble(index: usize, entries: &[Entry], children: &[Vec<usize>]) -> Node {
     }
 }
 
+/// The most characters a stored name may carry.
+///
+/// A longer offering is refused whole. Nothing ever truncates: a silent cut
+/// would store a name the viewer did not choose.
+pub const NAME_LIMIT: usize = 200;
+
+/// A viewer-given window name, as it may be stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Name {
+    /// The viewer cleared the name; the row falls back to the cut request.
+    Clear,
+    /// A trimmed name of at most [`NAME_LIMIT`] characters.
+    Set(String),
+}
+
+/// Normalization refused the offering outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TooLong;
+
+/// Turn what the viewer typed into what may be stored as a name.
+///
+/// Surrounding whitespace is trimmed away. What remains empty or blank
+/// clears the name. Anything longer than [`NAME_LIMIT`] characters is
+/// refused whole, never truncated. These are facts about what the column
+/// may hold; how the value reaches here and what a refusal shows are the
+/// shell's concerns.
+pub fn normalize_name(input: &str) -> Result<Name, TooLong> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(Name::Clear);
+    }
+    if trimmed.chars().count() > NAME_LIMIT {
+        return Err(TooLong);
+    }
+    Ok(Name::Set(trimmed.to_owned()))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{tree, Entry, Window};
+    use super::{normalize_name, tree, Entry, Name, TooLong, Window, NAME_LIMIT};
     use crate::ask::plan::{Column, ColumnKind, Plan};
     use uuid::Uuid;
 
@@ -295,5 +344,64 @@ mod tests {
         assert!(Window::answered(id(9), "user_01", "ask", Some(&plan), None).is_none());
         assert!(Window::answered(id(9), "user_01", "ask", None, Some("<p></p>")).is_none());
         assert!(Window::answered(id(9), "user_01", "ask", None, None).is_none());
+    }
+
+    #[test]
+    fn a_name_is_trimmed_of_surrounding_whitespace() {
+        assert_eq!(
+            normalize_name("  Weekly report\t\n"),
+            Ok(Name::Set("Weekly report".to_owned()))
+        );
+    }
+
+    #[test]
+    fn an_empty_or_blank_name_clears_the_stored_one() {
+        assert_eq!(normalize_name(""), Ok(Name::Clear));
+        assert_eq!(normalize_name("   "), Ok(Name::Clear));
+        // Interior whitespace stays; only the edges are the viewer's accident.
+        assert_eq!(normalize_name(" a b "), Ok(Name::Set("a b".to_owned())));
+    }
+
+    #[test]
+    fn a_name_of_exactly_two_hundred_characters_is_kept() {
+        let name = "x".repeat(NAME_LIMIT);
+        assert_eq!(normalize_name(&name), Ok(Name::Set(name)));
+    }
+
+    #[test]
+    fn a_name_longer_than_two_hundred_characters_is_refused_whole() {
+        let name = "x".repeat(NAME_LIMIT + 1);
+        assert_eq!(normalize_name(&name), Err(TooLong));
+        // Multi-byte characters count per character, not per byte.
+        let wide = "é".repeat(NAME_LIMIT + 1);
+        assert_eq!(normalize_name(&wide), Err(TooLong));
+    }
+
+    #[test]
+    fn a_normalized_name_round_trips_through_storage() {
+        let Ok(Name::Set(stored)) = normalize_name("  Weekly report ") else {
+            panic!("a fitting name is kept");
+        };
+        // What comes back from the column is what normalization produced,
+        // and feeding it through again changes nothing.
+        assert_eq!(normalize_name(&stored), Ok(Name::Set(stored.clone())));
+        assert_eq!(stored, "Weekly report");
+    }
+
+    #[test]
+    fn flattening_yields_every_node_depth_first_without_nesting() {
+        let nodes = tree(&[
+            entry(1, None),
+            entry(2, Some(id(1))),
+            entry(3, Some(id(2))),
+            entry(4, None),
+        ]);
+
+        let flat: Vec<u8> = nodes
+            .iter()
+            .flat_map(crate::window::Node::flatten)
+            .map(|node| *node.entry.id.as_bytes().last().unwrap())
+            .collect();
+        assert_eq!(flat, vec![1, 2, 3, 4]);
     }
 }
