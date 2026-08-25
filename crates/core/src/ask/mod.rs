@@ -5,6 +5,7 @@
 //! to send* and *what a result means* is here, as functions over values.
 
 pub mod outcome;
+pub mod parent_url;
 pub mod pipeline;
 pub mod plan;
 pub mod prompt;

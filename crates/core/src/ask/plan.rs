@@ -80,6 +80,23 @@ impl Plan {
     }
 }
 
+/// The window a follow-up ask refines.
+///
+/// A follow-up is not a different machine from an ask — it issues the same
+/// first step and takes the same retries — so this rides [`super::pipeline::Pipeline::start`]
+/// as an argument rather than earning a second constructor. It is held for
+/// the whole ask so both prompts can draw on it and a retry re-uses the held
+/// value instead of losing the context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parent {
+    /// What the user typed to produce that window.
+    pub request: String,
+    /// The SQL and shape that worked.
+    pub plan: Plan,
+    /// The Tera template that worked.
+    pub template: String,
+}
+
 /// Wrap the model's `SELECT` so Postgres returns one JSON text value.
 ///
 /// The outer query turns every row into a JSON object and the whole result

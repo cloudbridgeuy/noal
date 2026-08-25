@@ -3,7 +3,7 @@
 
 use super::{returned_column_names, stored_column_names, Event, Origin, Pipeline, Step};
 use crate::ask::outcome::{Stage, Timing, Verdict};
-use crate::ask::plan::{Column, ColumnKind, Plan};
+use crate::ask::plan::{Column, ColumnKind, Parent, Plan};
 use serde_json::json;
 
 #[allow(clippy::unwrap_used)]
@@ -50,13 +50,13 @@ fn done_outcome(steps: &[Step]) -> &super::super::outcome::Outcome {
 
 #[test]
 fn starting_asks_the_model_to_plan() {
-    let (_, steps) = Pipeline::start("open tasks".into());
+    let (_, steps) = Pipeline::start("open tasks".into(), None);
     assert!(matches!(steps.as_slice(), [Step::Plan { .. }]));
 }
 
 #[test]
 fn a_plan_issues_a_query_and_a_render_together() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let steps = pipeline.apply(Event::Planned(plan()));
     assert!(matches!(
         steps.as_slice(),
@@ -66,7 +66,7 @@ fn a_plan_issues_a_query_and_a_render_together() {
 
 #[test]
 fn happy_path_fills_once_the_query_answers_first() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
 
     let rows = json!([{ "id": 1 }]);
@@ -97,7 +97,7 @@ fn happy_path_fills_once_the_query_answers_first() {
 
 #[test]
 fn happy_path_fills_once_the_render_answers_first() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
 
     let after_render = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
@@ -128,7 +128,7 @@ fn happy_path_fills_once_the_render_answers_first() {
 
 #[test]
 fn record_appends_timings_in_order() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     pipeline.record(Timing {
         stage: Stage::Plan,
         millis: 10,
@@ -160,7 +160,7 @@ fn record_appends_timings_in_order() {
 
 #[test]
 fn a_refused_query_asks_the_model_to_plan_again() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
 
     let steps = pipeline.apply(Event::Queried(Err("column \"nope\" does not exist".into())));
@@ -180,7 +180,7 @@ fn a_refused_query_asks_the_model_to_plan_again() {
 
 #[test]
 fn a_second_refused_query_ends_the_ask_instead_of_planning_a_third_time() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Err("first refusal".into())));
     // The model tries again; a fresh plan with no held template.
@@ -208,7 +208,7 @@ fn a_second_refused_query_ends_the_ask_instead_of_planning_a_third_time() {
 
 #[test]
 fn a_refused_fill_asks_the_model_to_render_again() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
     let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
@@ -225,7 +225,7 @@ fn a_refused_fill_asks_the_model_to_render_again() {
 
 #[test]
 fn a_second_refused_fill_ends_the_ask() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
     let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
@@ -245,7 +245,7 @@ fn a_second_refused_fill_ends_the_ask() {
 
 #[test]
 fn a_fill_that_carries_a_link_refuses_the_render_and_retries_it() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
     let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
@@ -266,7 +266,7 @@ fn a_fill_that_carries_a_link_refuses_the_render_and_retries_it() {
 
 #[test]
 fn a_tripped_fill_that_recovers_clears_the_latch_and_answers() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
     let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
@@ -292,7 +292,7 @@ fn a_tripped_fill_that_recovers_clears_the_latch_and_answers() {
 
 #[test]
 fn a_second_tripped_fill_ends_the_ask_at_the_render_stage() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
     let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
@@ -324,7 +324,7 @@ fn a_second_tripped_fill_ends_the_ask_at_the_render_stage() {
 
 #[test]
 fn a_mixed_refusal_budget_exhausts_at_the_render_stage() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Ok(json!([{ "id": 1 }]))));
     let _ = pipeline.apply(Event::Rendered("{{ rows.0.missing }}".into()));
@@ -355,7 +355,7 @@ fn a_mixed_refusal_budget_exhausts_at_the_render_stage() {
 
 #[test]
 fn debug_attempts_holds_every_refusal_in_order() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
     let _ = pipeline.apply(Event::Planned(plan()));
@@ -383,7 +383,7 @@ fn debug_attempts_holds_every_refusal_in_order() {
 
 #[test]
 fn a_replan_with_an_equal_shape_keeps_the_template_and_only_queries() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
     let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
@@ -397,7 +397,7 @@ fn a_replan_with_an_equal_shape_keeps_the_template_and_only_queries() {
 
 #[test]
 fn a_replan_with_a_different_shape_drops_the_template_and_renders_again() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
     let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
@@ -411,7 +411,7 @@ fn a_replan_with_a_different_shape_drops_the_template_and_renders_again() {
 
 #[test]
 fn a_retry_that_keeps_the_template_still_reaches_answered() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Rendered("<p>{{ rows | length }}</p>".into()));
     let _ = pipeline.apply(Event::Queried(Err("bad sql".into())));
@@ -445,7 +445,7 @@ fn a_retry_that_keeps_the_template_still_reaches_answered() {
 
 #[test]
 fn the_fill_step_is_never_issued_twice_for_one_pair() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
 
     let mut fills = 0;
@@ -550,7 +550,7 @@ fn a_refused_fill_on_a_reopened_ask_gives_up_instead_of_calling_the_model() {
 
 #[test]
 fn an_asked_ask_keeps_its_retry_policy_and_origin() {
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
 
     // One refusal is not the end for an asked ask; the model plans again.
@@ -638,7 +638,7 @@ fn a_reopened_ask_whose_rows_fit_the_stored_shape_fills_normally() {
 fn an_asked_ask_is_not_shape_gated() {
     // The same drift on an asked ask keeps today's behaviour: the fill
     // proceeds (or retries as it does today); the check never fires.
-    let (mut pipeline, _) = Pipeline::start("open tasks".into());
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
     let _ = pipeline.apply(Event::Planned(plan()));
     let _ = pipeline.apply(Event::Rendered(stored_template()));
 
@@ -648,4 +648,48 @@ fn an_asked_ask_is_not_shape_gated() {
         other => panic!("expected exactly one Fill step, got {other:?}"),
     }
     assert!(pipeline.debug.attempts.is_empty());
+}
+
+#[test]
+fn a_started_pipeline_holds_its_parent_for_both_prompts() {
+    let parent = Parent {
+        request: "open tickets".into(),
+        plan: plan(),
+        template: "<ul></ul>".into(),
+    };
+    let (mut pipeline, steps) = Pipeline::start("only the blockers".into(), Some(parent));
+    match steps.as_slice() {
+        [Step::Plan { prompt }] => {
+            assert!(prompt.contains("# Previous window"));
+            assert!(prompt.contains("select id from ticket"));
+            // The new request stays last, after the parent's context.
+            let previous = prompt.find("# Previous window").unwrap();
+            let request = prompt.find("# Request").unwrap();
+            assert!(previous < request);
+        }
+        other => panic!("expected exactly one Plan step, got {other:?}"),
+    }
+
+    // The held parent reaches the render prompt too, via on_planned.
+    let steps = pipeline.apply(Event::Planned(plan()));
+    match steps.as_slice() {
+        [Step::Query { .. }, Step::Render { prompt }] | [Step::Render { prompt }] => {
+            assert!(prompt.contains("# The previous window's template"));
+            assert!(prompt.contains("<ul></ul>"));
+        }
+        other => panic!("unexpected steps {other:?}"),
+    }
+}
+
+#[test]
+fn a_root_ask_carries_no_previous_window() {
+    let (mut pipeline, _) = Pipeline::start("open tasks".into(), None);
+    let _ = pipeline.apply(Event::Planned(plan()));
+    assert_eq!(pipeline.parent, None);
+}
+
+#[test]
+fn a_reopened_pipeline_has_no_parent_context() {
+    let (pipeline, _) = Pipeline::reopen("open tasks".into(), plan(), "<p></p>".into());
+    assert_eq!(pipeline.parent, None);
 }

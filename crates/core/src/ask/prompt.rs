@@ -4,7 +4,7 @@
 //! previous failed attempts, so the retry policy is a matter of what the
 //! shell passes in and the prompt itself is testable by string comparison.
 
-use super::plan::{Column, ColumnKind};
+use super::plan::{Column, ColumnKind, Parent};
 use super::CATALOG;
 
 /// How many times a stage may run before noal gives up on the request.
@@ -30,7 +30,9 @@ You write one read-only PostgreSQL SELECT that answers a user's request over \
 the schema you are given, and you describe the shape of its result. You return \
 JSON matching the schema you are constrained to. Use only the tables and \
 columns in the catalog. Alias every output column with a plain snake_case \
-name. No semicolon, no comments, no DML.";
+name. No semicolon, no comments, no DML. When a previous window is given, the \
+new request refines it: start from the previous query, unless the request asks \
+for something unrelated.";
 
 /// The system preamble for the rendering call.
 pub const RENDER_PREAMBLE: &str = "\
@@ -47,14 +49,28 @@ no meta refresh, no inline event handlers (attribute names beginning with \
 style=\"...\" is allowed otherwise. Choose the presentation that fits the request: a table \
 for many uniform rows, cards or a list for few rich rows, headings and short \
 summary text where they help. Never invent numbers in prose; compute them \
-with Tera (`{{ rows | length }}`) or leave them out.";
+with Tera (`{{ rows | length }}`) or leave them out. When the previous \
+window's template is given, follow its presentation unless the new shape \
+makes it wrong.";
 
 /// Build the user message for the planning call.
+///
+/// With a parent, `# Previous window` sits between the catalog and the
+/// request: the parent's SQL and shape tell the planner which query worked,
+/// and the request stays last, closest to what the answer must address.
 #[must_use]
-pub fn plan_prompt(request: &str, previous: &[Attempt]) -> String {
+pub fn plan_prompt(request: &str, parent: Option<&Parent>, previous: &[Attempt]) -> String {
     let mut text = String::new();
     text.push_str("# Catalog\n\n");
     text.push_str(CATALOG);
+    if let Some(parent) = parent {
+        push_previous_window(
+            &mut text,
+            &parent.request,
+            &parent.plan.sql,
+            &parent.plan.shape,
+        );
+    }
     text.push_str("\n\n# Request\n\n");
     text.push_str(request.trim());
     text.push('\n');
@@ -63,8 +79,16 @@ pub fn plan_prompt(request: &str, previous: &[Attempt]) -> String {
 }
 
 /// Build the user message for the rendering call.
+///
+/// With a parent, its template rides after the shape and before any failed
+/// attempts: presentation follows the window being refined.
 #[must_use]
-pub fn render_prompt(request: &str, shape: &[Column], previous: &[Attempt]) -> String {
+pub fn render_prompt(
+    request: &str,
+    shape: &[Column],
+    parent: Option<&Parent>,
+    previous: &[Attempt],
+) -> String {
     let mut text = String::new();
     text.push_str("# Request\n\n");
     text.push_str(request.trim());
@@ -72,8 +96,26 @@ pub fn render_prompt(request: &str, shape: &[Column], previous: &[Attempt]) -> S
     for column in shape {
         text.push_str(&describe_column(column));
     }
+    if let Some(parent) = parent {
+        text.push_str("\n# The previous window's template\n\n");
+        text.push_str(parent.template.trim());
+        text.push('\n');
+    }
     push_attempts(&mut text, "template", previous);
     text
+}
+
+/// Append the `# Previous window` section of the plan prompt.
+fn push_previous_window(text: &mut String, request: &str, sql: &str, shape: &[Column]) {
+    text.push_str("\n# Previous window\n\n");
+    text.push_str("The request below refined this window; start from its query.\n\n");
+    text.push_str(request.trim());
+    text.push_str("\n\nIts SQL:\n\n```\n");
+    text.push_str(sql.trim());
+    text.push_str("\n```\n\nIts shape:\n\n");
+    for column in shape {
+        text.push_str(&describe_column(column));
+    }
 }
 
 /// One line per column, plus one indented line per nested field.
@@ -150,15 +192,54 @@ pub fn strip_fences(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{plan_prompt, render_prompt, strip_fences, Attempt, RENDER_PREAMBLE};
-    use crate::ask::plan::{Column, ColumnKind, NestedField};
+    use super::{
+        plan_prompt, render_prompt, strip_fences, Attempt, Parent, PLAN_PREAMBLE, RENDER_PREAMBLE,
+    };
+    use crate::ask::plan::{Column, ColumnKind, NestedField, Plan};
+
+    fn parent() -> Parent {
+        Parent {
+            request: "open tickets".into(),
+            plan: Plan {
+                sql: "select id, title from ticket where state = 'open'".into(),
+                shape: vec![Column {
+                    name: "title".into(),
+                    kind: ColumnKind::Text,
+                    description: "the ticket title".into(),
+                    fields: vec![],
+                }],
+            },
+            template: "<ul>{% for r in rows %}<li>{{ r.title }}</li>{% endfor %}</ul>".into(),
+        }
+    }
 
     #[test]
     fn plan_prompt_carries_the_catalog_and_the_request() {
-        let text = plan_prompt("  open tasks ", &[]);
+        let text = plan_prompt("  open tasks ", None, &[]);
         assert!(text.contains("## ticket"));
         assert!(text.contains("# Request\n\nopen tasks\n"));
         assert!(!text.contains("Previous attempts"));
+    }
+
+    #[test]
+    fn plan_prompt_without_a_parent_has_no_previous_window_section() {
+        let text = plan_prompt("open tasks", None, &[]);
+        assert!(!text.contains("Previous window"));
+    }
+
+    #[test]
+    fn plan_prompt_sits_the_previous_window_between_catalog_and_request() {
+        let parent = parent();
+        let text = plan_prompt("only the blockers", Some(&parent), &[]);
+        let catalog = text.find("## ticket").unwrap();
+        let previous = text.find("# Previous window").unwrap();
+        let request = text.find("# Request").unwrap();
+        assert!(catalog < previous && previous < request);
+        // The parent's request as prose, its SQL fenced, its shape as bullets.
+        assert!(text.contains("The request below refined this window"));
+        assert!(text.contains("open tickets"));
+        assert!(text.contains("```\nselect id, title from ticket where state = 'open'\n```"));
+        assert!(text.contains("- `title` (text): the ticket title"));
     }
 
     #[test]
@@ -167,7 +248,7 @@ mod tests {
             artifact: "select nope from ticket".into(),
             error: "column \"nope\" does not exist".into(),
         }];
-        let text = plan_prompt("open tasks", &previous);
+        let text = plan_prompt("open tasks", None, &previous);
         assert!(text.contains("# Previous attempts"));
         assert!(text.contains("## Attempt 1"));
         assert!(text.contains("select nope from ticket"));
@@ -193,22 +274,40 @@ mod tests {
                 }],
             },
         ];
-        let text = render_prompt("show tickets", &shape, &[]);
+        let text = render_prompt("show tickets", &shape, None, &[]);
         assert!(text.contains("- `title` (text): the ticket title"));
         assert!(text.contains("- `comments` (list of objects): its comments"));
         assert!(text.contains("  - `body` (text)"));
     }
 
     #[test]
-    fn render_prompt_appends_failed_attempts_with_their_errors() {
+    fn render_prompt_carries_the_parents_template_after_the_shape_and_before_attempts() {
+        let parent = parent();
         let previous = [Attempt {
             artifact: "{{ rows.0.missing }}".into(),
             error: "variable `missing` not found".into(),
         }];
-        let text = render_prompt("show tickets", &[], &previous);
-        assert!(text.contains("# Previous attempts"));
-        assert!(text.contains("{{ rows.0.missing }}"));
-        assert!(text.contains("variable `missing` not found"));
+        let text = render_prompt("same but sorted", &[], Some(&parent), &previous);
+        let shape = text.find("# Shape of `rows`").unwrap();
+        let template = text.find("# The previous window's template").unwrap();
+        let attempts = text.find("# Previous attempts").unwrap();
+        assert!(shape < template && template < attempts);
+        // Verbatim, not restyled.
+        assert!(text.contains("{% for r in rows %}<li>{{ r.title }}</li>{% endfor %}"));
+    }
+
+    #[test]
+    fn render_prompt_without_a_parent_has_no_template_section() {
+        let text = render_prompt("show tickets", &[], None, &[]);
+        assert!(!text.contains("previous window's template"));
+    }
+
+    #[test]
+    fn both_preambles_state_the_refinement_rules() {
+        assert!(PLAN_PREAMBLE.contains("When a previous window is given"));
+        assert!(
+            RENDER_PREAMBLE.contains("follow its presentation unless the new shape makes it wrong")
+        );
     }
 
     #[test]

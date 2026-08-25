@@ -19,16 +19,17 @@
 use std::future::Future;
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Form;
 use maud::{html, Markup};
 use noal_core::ask::outcome::{Outcome, Stage, Timing, Verdict};
+use noal_core::ask::parent_url::window_segment;
 use noal_core::ask::pipeline::{Event, Pipeline, Step};
-use noal_core::ask::plan::Plan;
+use noal_core::ask::plan::{Column, Parent, Plan};
 use noal_core::ask::prompt::{strip_fences, PLAN_PREAMBLE, RENDER_PREAMBLE};
 use noal_core::session::SessionClaims;
-use noal_core::window::Window;
+use noal_core::window::{NewWindow, Window};
 use noal_view::ask::Saved;
 use noal_view::windows::Current;
 use serde::Deserialize;
@@ -65,17 +66,90 @@ pub struct AskForm {
 pub async fn ask(
     State(state): State<AppState>,
     Fragment(signed_in): Fragment<SignedIn>,
+    headers: HeaderMap,
     Form(form): Form<AskForm>,
 ) -> Response {
-    match run(&state, form.request.trim().to_owned()).await {
+    let parent = match resolve_parent(&state, &headers, &signed_in.0.user_id).await {
+        Ok(parent) => parent,
+        // A header naming a window that does not exist — or naming a
+        // segment that cannot be one — is refused rather than quietly
+        // answered from the root.
+        Err(response) => return response,
+    };
+    let (parent, parent_id) = match parent {
+        Some((parent, id)) => (Some(parent), Some(id)),
+        None => (None, None),
+    };
+    match run(&state, form.request.trim().to_owned(), parent).await {
         Ok(outcome) => match &outcome.verdict {
             Verdict::Answered { html } => {
-                answered_response(&state, &signed_in.0, &outcome, html).await
+                answered_response(&state, &signed_in.0, &outcome, html, parent_id).await
             }
             Verdict::Failed { stage } => refused_response(&outcome, *stage),
         },
         Err(failure) => failure.toast(),
     }
+}
+
+/// The window the address bar names, as [`Parent`] context for the pipeline
+/// plus the id the saved row will hang under.
+///
+/// `None` is a root ask: no header, or a value whose path is not
+/// `/w/<segment>`. A well-formed segment that fails to parse as a uuid is
+/// the opposite of a root ask — such a path reached the browser from noal's
+/// own markup, so it is a bug worth seeing, not a request to guess at. The
+/// same refusal covers an id that names no row or another user's row: one
+/// status and one message keep this route from becoming a probe for which
+/// windows exist.
+async fn resolve_parent(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: &str,
+) -> Result<Option<(Parent, uuid::Uuid)>, Response> {
+    let Some(Ok(value)) = headers
+        .get("HX-Current-URL")
+        .map(axum::http::HeaderValue::to_str)
+    else {
+        return Ok(None);
+    };
+    let Some(segment) = window_segment(value) else {
+        return Ok(None);
+    };
+    let Ok(id) = uuid::Uuid::parse_str(segment) else {
+        return Err(Failure::NoSuchWindow.toast());
+    };
+
+    let client = match state.database().await {
+        Ok(client) => client,
+        Err(failure) => return Err(failure.toast()),
+    };
+    let window = match crate::window::find(&client, id, user_id).await {
+        Ok(window) => window,
+        Err(error) => return Err(Failure::Database(error).toast()),
+    };
+    let Some(window) = window else {
+        return Err(Failure::NoSuchWindow.toast());
+    };
+
+    let shape: Vec<Column> = match serde_json::from_value(window.shape.clone()) {
+        Ok(shape) => shape,
+        Err(error) => {
+            worker::console_error!("stored shape unreadable: {error}");
+            return Err(Failure::NoSuchWindow.toast());
+        }
+    };
+
+    Ok(Some((
+        Parent {
+            request: window.request,
+            plan: Plan {
+                sql: window.sql,
+                shape,
+            },
+            template: window.template,
+        },
+        id,
+    )))
 }
 
 /// Everything an answered ask swaps in: the answer itself, the debug payload
@@ -107,8 +181,9 @@ async fn answered_response(
     viewer: &SessionClaims,
     outcome: &Outcome,
     filled: &str,
+    parent_id: Option<uuid::Uuid>,
 ) -> Response {
-    match save_window(state, viewer, outcome).await {
+    match save_window(state, viewer, outcome, parent_id).await {
         Ok(id) => {
             let windows = crate::chrome::build(state, &viewer.user_id).await;
             let body = answered_body(
@@ -143,10 +218,7 @@ async fn answered_response(
 /// timings worth showing.
 fn refused_body(outcome: &Outcome, stage: Stage) -> Markup {
     html! {
-        (noal_view::layout::toast(noal_view::ask::failure_text(
-            stage,
-            noal_core::ask::outcome::Origin::Asked,
-        )))
+        (noal_view::layout::toast(noal_view::ask::failure_text(stage)))
         (noal_view::layout::debug_payload(outcome))
     }
 }
@@ -184,20 +256,18 @@ async fn save_window(
     state: &AppState,
     viewer: &SessionClaims,
     outcome: &Outcome,
+    parent_id: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, String> {
     let id = entropy::window_id().map_err(|failure| failure.detail())?;
 
-    let window = Window::answered(
+    let window = Window::answered(NewWindow {
         id,
-        &viewer.user_id,
-        &outcome.request,
-        outcome
-            .debug
-            .plan
-            .as_ref()
-            .zip(outcome.debug.template.as_deref()),
-        crate::state::now(),
-    )
+        parent_id,
+        user_id: viewer.user_id.clone(),
+        request: outcome.request.clone(),
+        plan: outcome.debug.plan.as_ref(),
+        template: outcome.debug.template.as_deref(),
+    })
     .ok_or_else(|| "an answered ask held no plan and template".to_owned())?;
 
     let client = state.database().await.map_err(|failure| failure.detail())?;
@@ -209,8 +279,12 @@ async fn save_window(
 ///
 /// Pops whatever steps the pipeline hands back, runs them, and feeds the
 /// results in as events.
-async fn run(state: &AppState, request: String) -> Result<Outcome, Failure> {
-    let (pipeline, steps) = Pipeline::start(request);
+async fn run(
+    state: &AppState,
+    request: String,
+    parent: Option<Parent>,
+) -> Result<Outcome, Failure> {
+    let (pipeline, steps) = Pipeline::start(request, parent);
     drive(pipeline, steps, state).await
 }
 

@@ -8,7 +8,7 @@
 //! and the shell's loop never has to know why it is doing what it does.
 
 use super::outcome::{Debug, Origin, Outcome, Stage, StageAttempt, Timing, Verdict};
-use super::plan::{wrap_sql, Plan};
+use super::plan::{wrap_sql, Parent, Plan};
 use super::prompt::{plan_prompt, render_prompt, Attempt, MAX_ATTEMPTS};
 use super::validator::forbidden_token;
 
@@ -86,13 +86,22 @@ pub struct Pipeline {
     /// Whether the model was ever in the loop. A reopened pipeline owns its
     /// plan and template, so its retry hooks refuse to call the model again.
     origin: Origin,
+    /// The window this ask refines, when the address bar named one. Held for
+    /// the whole ask so both prompts draw on it and a retry re-uses it.
+    parent: Option<Parent>,
 }
 
 impl Pipeline {
     /// Start an ask: the first step is always to plan.
     #[must_use]
-    pub fn start(request: String) -> (Self, Vec<Step>) {
-        let prompt = plan_prompt(&request, &[]);
+    /// Start an ask: the first step is always to plan.
+    ///
+    /// `parent` is the window the address bar names, or `None` at the root:
+    /// a follow-up is not a different machine from an ask, only an argument
+    /// richer one.
+    #[must_use]
+    pub fn start(request: String, parent: Option<Parent>) -> (Self, Vec<Step>) {
+        let prompt = plan_prompt(&request, parent.as_ref(), &[]);
         let pipeline = Self {
             request,
             plan: None,
@@ -103,6 +112,7 @@ impl Pipeline {
             render_attempts: Vec::new(),
             debug: Debug::default(),
             origin: Origin::Asked,
+            parent,
         };
         (pipeline, vec![Step::Plan { prompt }])
     }
@@ -132,6 +142,7 @@ impl Pipeline {
             render_attempts: Vec::new(),
             debug,
             origin: Origin::Reopened,
+            parent: None,
         };
         (pipeline, vec![Step::Query { sql }])
     }
@@ -188,7 +199,12 @@ impl Pipeline {
             // The held template, if any, was written for a shape this plan
             // does not share; it would bind to the wrong fields.
             self.template = None;
-            let prompt = render_prompt(&self.request, &plan.shape, &self.render_attempts);
+            let prompt = render_prompt(
+                &self.request,
+                &plan.shape,
+                self.parent.as_ref(),
+                &self.render_attempts,
+            );
             self.plan = Some(plan);
             vec![Step::Query { sql }, Step::Render { prompt }]
         }
@@ -258,7 +274,7 @@ impl Pipeline {
             }))];
         }
         if self.plan_attempts.len() < MAX_ATTEMPTS {
-            let prompt = plan_prompt(&self.request, &self.plan_attempts);
+            let prompt = plan_prompt(&self.request, self.parent.as_ref(), &self.plan_attempts);
             vec![Step::Plan { prompt }]
         } else {
             vec![Step::Done(self.finish(Verdict::Failed {
@@ -305,7 +321,12 @@ impl Pipeline {
                 .plan
                 .as_ref()
                 .map_or(&[][..], |plan| plan.shape.as_slice());
-            let prompt = render_prompt(&self.request, shape, &self.render_attempts);
+            let prompt = render_prompt(
+                &self.request,
+                shape,
+                self.parent.as_ref(),
+                &self.render_attempts,
+            );
             vec![Step::Render { prompt }]
         } else {
             vec![Step::Done(
@@ -349,7 +370,12 @@ impl Pipeline {
                 .plan
                 .as_ref()
                 .map_or(&[][..], |plan| plan.shape.as_slice());
-            let prompt = render_prompt(&self.request, shape, &self.render_attempts);
+            let prompt = render_prompt(
+                &self.request,
+                shape,
+                self.parent.as_ref(),
+                &self.render_attempts,
+            );
             vec![Step::Render { prompt }]
         } else {
             vec![Step::Done(self.finish(Verdict::Failed {
