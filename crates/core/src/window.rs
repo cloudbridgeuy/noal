@@ -51,14 +51,15 @@ impl Window {
     /// An answer is only savable when the pipeline actually holds a plan and
     /// a template, so `artifacts` carries both or the call answers `None`,
     /// and the caller must treat that exactly like a failed save rather than
-    /// inventing a half row. `parent_id` starts empty — windows attach to
-    /// nothing until something decides they belong somewhere. `created_at`
-    /// comes from the caller because only the moment of the insert knows it;
-    /// the shell reads the clock once, at the edge, like every other
-    /// time-dependent input.
+    /// inventing a half row. `parent_id` is the window the address bar
+    /// named — the one fact for "this window follows its parent" — and `None`
+    /// at the root. `created_at` comes from the caller because only the
+    /// moment of the insert knows it; the shell reads the clock once, at the
+    /// edge, like every other time-dependent input.
     #[must_use]
     pub fn answered(
         id: Uuid,
+        parent_id: Option<Uuid>,
         user_id: &str,
         request: &str,
         artifacts: Option<(&Plan, &str)>,
@@ -69,7 +70,7 @@ impl Window {
         Some(Self {
             id,
             user_id: user_id.to_owned(),
-            parent_id: None,
+            parent_id,
             request: request.to_owned(),
             sql: plan.sql.clone(),
             shape: serde_json::to_value(plan.shape.clone()).ok()?,
@@ -399,6 +400,7 @@ mod tests {
     fn an_answered_ask_becomes_a_savable_window() {
         let window = Window::answered(
             id(9),
+            None,
             "user_01",
             "open tasks",
             Some((&plan(), "<p>{{ rows | length }}</p>")),
@@ -418,11 +420,26 @@ mod tests {
     }
 
     #[test]
+    fn a_follow_up_records_the_window_it_refines() {
+        let parent = id(4);
+        let window = Window::answered(
+            id(9),
+            Some(parent),
+            "user_01",
+            "only the blockers",
+            Some((&plan(), "<p></p>")),
+            crate::clock::Timestamp::from_unix_seconds(0),
+        )
+        .unwrap();
+        assert_eq!(window.parent_id, Some(parent));
+    }
+
+    #[test]
     fn an_answer_without_its_artifacts_cannot_be_saved() {
         let at = crate::clock::Timestamp::from_unix_seconds(0);
         // The paired parameter leaves no way to pass a plan without a
         // template or the reverse; only the fully empty call can refuse.
-        assert!(Window::answered(id(9), "user_01", "ask", None, at).is_none());
+        assert!(Window::answered(id(9), None, "user_01", "ask", None, at).is_none());
     }
 
     #[test]
