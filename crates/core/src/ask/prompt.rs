@@ -191,6 +191,7 @@ pub fn strip_fences(text: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
         plan_prompt, render_prompt, strip_fences, Attempt, Parent, PLAN_PREAMBLE, RENDER_PREAMBLE,
