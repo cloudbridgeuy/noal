@@ -67,8 +67,9 @@ pub async fn show(
 pub struct NameForm {
     /// What the viewer typed. Empty clears the stored name.
     pub name: Option<String>,
-    /// Present only on the form of the window being viewed, so the fresh
-    /// tree can carry that fact back out of band.
+    /// Present only on the form of the window being viewed, so the response
+    /// can carry that fact back out of band.
+    #[serde(rename = "current-window")]
     pub current_window: Option<String>,
 }
 
