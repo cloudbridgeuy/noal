@@ -6,11 +6,11 @@
 //! the palette's tree. Both are pure; reading rows from Postgres and writing
 //! them back are the shell's job.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
 
-use crate::ask::plan::Plan;
+use crate::ask::plan::{Column, Plan};
 
 /// One saved window: everything that recreates its view.
 ///
@@ -68,6 +68,28 @@ impl Window {
             name: None,
         })
     }
+}
+
+/// True when the query's returned columns are the ones the stored shape
+/// describes.
+///
+/// Only the first row can be checked: the rows arrive as one JSON array,
+/// and every object row carries the same keys. An empty result — and a
+/// non-array, which the wrapping query should never produce — cannot be
+/// inspected, so it passes; a window whose rows are all gone looks like
+/// one that legitimately returns nothing. Key order does not matter;
+/// presence does.
+#[must_use]
+pub fn rows_match_shape(rows: &serde_json::Value, shape: &[Column]) -> bool {
+    let Some(row) = rows.as_array().and_then(|all| all.first()) else {
+        return true;
+    };
+    let Some(row) = row.as_object() else {
+        return false;
+    };
+    let stored: HashSet<&str> = shape.iter().map(|column| column.name.as_str()).collect();
+    let returned: HashSet<&str> = row.keys().map(String::as_str).collect();
+    stored == returned
 }
 
 /// One row of the tree as the palette shows it: the label data plus where the
@@ -145,9 +167,56 @@ fn assemble(index: usize, entries: &[Entry], children: &[Vec<usize>]) -> Node {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{tree, Entry, Window};
+    use super::{rows_match_shape, tree, Entry, Window};
     use crate::ask::plan::{Column, ColumnKind, Plan};
+    use serde_json::json;
     use uuid::Uuid;
+
+    fn column(nme: &str) -> Column {
+        Column {
+            name: nme.to_owned(),
+            kind: ColumnKind::Text,
+            description: String::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn keys_equal_to_the_stored_columns_pass_regardless_of_order() {
+        let shape = vec![column("name"), column("id")];
+        assert!(rows_match_shape(&json!([{ "id": 1, "name": "x" }]), &shape));
+    }
+
+    #[test]
+    fn a_renamed_column_fails() {
+        let shape = vec![column("name")];
+        assert!(!rows_match_shape(&json!([{ "nome": "x" }]), &shape));
+    }
+
+    #[test]
+    fn missing_and_extra_keys_fail() {
+        let shape = vec![column("name"), column("count")];
+        assert!(!rows_match_shape(&json!([{ "name": "x" }]), &shape));
+        assert!(!rows_match_shape(
+            &json!([{ "name": "x", "count": 1, "extra": 2 }]),
+            &shape
+        ));
+    }
+
+    #[test]
+    fn empty_and_non_array_results_cannot_drift() {
+        // Accepted fog: a window whose rows are all gone looks like one that
+        // legitimately returns nothing.
+        let shape = vec![column("name")];
+        assert!(rows_match_shape(&json!([]), &shape));
+        assert!(rows_match_shape(&json!("not an array"), &shape));
+    }
+
+    #[test]
+    fn an_empty_shape_demands_an_empty_row() {
+        assert!(rows_match_shape(&json!([{}]), &[]));
+        assert!(!rows_match_shape(&json!([{ "a": 1 }]), &[]));
+    }
 
     fn id(n: u8) -> Uuid {
         Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, n])
