@@ -143,7 +143,10 @@ async fn answered_response(
 /// timings worth showing.
 fn refused_body(outcome: &Outcome, stage: Stage) -> Markup {
     html! {
-        (noal_view::layout::toast(noal_view::ask::failure_text(stage)))
+        (noal_view::layout::toast(noal_view::ask::failure_text(
+            stage,
+            noal_core::ask::outcome::Origin::Asked,
+        )))
         (noal_view::layout::debug_payload(outcome))
     }
 }
@@ -188,8 +191,12 @@ async fn save_window(
         id,
         &viewer.user_id,
         &outcome.request,
-        outcome.debug.plan.as_ref(),
-        outcome.debug.template.as_deref(),
+        outcome
+            .debug
+            .plan
+            .as_ref()
+            .zip(outcome.debug.template.as_deref()),
+        crate::state::now(),
     )
     .ok_or_else(|| "an answered ask held no plan and template".to_owned())?;
 
