@@ -267,7 +267,8 @@ mod tests {
             }),
         )
         .into_string();
-        assert!(rendered.contains("<li id=\"window-current\"><a class=\"window-label\" href=\"/w/"));
+        assert!(rendered
+            .contains("<li class=\"tree-row\" id=\"window-current\"><a class=\"window-label\" href=\"/w/"));
         assert_eq!(rendered.matches("id=\"window-current\"").count(), 1);
     }
 
