@@ -89,6 +89,7 @@ header nav { padding: 1rem 0; }
 #ask-form { display: grid; gap: .5rem; }
 .sign-out { display: contents; }
 .sign-out button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+.saved-date { color: var(--muted); font-size: .875rem; }
 
 .toast {
   align-items: flex-start; gap: .75rem; padding: .75rem 1rem;
@@ -1099,7 +1100,9 @@ mod tests {
         assert!(super::STYLE.contains(".input {"));
         assert!(super::STYLE.contains(".card { border: 1px solid var(--border);"));
         assert!(super::STYLE.contains(".toast {"));
-        assert!(super::STYLE.contains(".tab-active { color: #7dd3fc; border-bottom-color: #7dd3fc; }"));
+        assert!(
+            super::STYLE.contains(".tab-active { color: #7dd3fc; border-bottom-color: #7dd3fc; }")
+        );
         assert!(super::STYLE.contains(".tree-row:hover { background: #18181b; }"));
     }
 
@@ -1116,6 +1119,11 @@ mod tests {
     fn the_style_defines_text_utilities() {
         assert!(super::STYLE.contains(".muted { color: var(--muted); }"));
         assert!(super::STYLE.contains(".text-sm { font-size: .875rem; }"));
+    }
+
+    #[test]
+    fn the_saved_date_line_is_small_muted_text() {
+        assert!(super::STYLE.contains(".saved-date { color: var(--muted); font-size: .875rem; }"));
     }
 
     #[test]
