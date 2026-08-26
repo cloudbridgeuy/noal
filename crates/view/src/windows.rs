@@ -183,7 +183,8 @@ fn rename_form(node: &Node, marked: bool) -> Markup {
     let id = node.entry.id;
     html! {
         form .window-rename hidden hx-post=(format!("/w/{id}/name"))
-            hx-target="#window-tree" hx-swap="outerHTML" {
+            hx-target="#window-tree" hx-swap="outerHTML"
+            hx-sync="this:drop" hx-disabled-elt="find .window-rename-submit" {
             @if marked {
                 input type="hidden" name="current-window" value="true" {}
             }
@@ -427,6 +428,25 @@ mod tests {
         // The form targets the tree itself, so a saved rename swaps the fresh
         // tree in place and the palette never has to close.
         assert!(tag.contains(r##"hx-target="#window-tree""##));
+    }
+
+    #[test]
+    fn the_rename_form_drops_a_second_submit_and_disables_only_the_save_button() {
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Home,
+        )
+        .into_string();
+        let tag = opening_form_tag(&rendered);
+        assert!(tag.contains(r#"hx-sync="this:drop""#));
+        assert!(tag.contains(r#"hx-disabled-elt="find .window-rename-submit""#));
+
+        // The cancel control must stay outside hx-disabled-elt's reach so a
+        // slow rename can still be put away mid-flight.
+        assert!(!tag.contains("window-rename-cancel"));
     }
 
     /// Pull the opening `<form ...>` tag of the rendered tree's one form.

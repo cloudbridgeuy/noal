@@ -221,3 +221,29 @@ would re-implement the same handling, rather than one page-chrome region
 answering for the whole document. The cost is the one already paid for the
 palette itself: an anonymous viewer gets no toast region, because `#toasts`
 exists only where `#palette` does.
+
+---
+
+## A rename submit drops its double, and a refused name names the limit
+
+**Chosen over** queueing rapid submits (htmx's default), over disabling the
+whole form during flight, and over `maxlength` on the input.
+
+Dated 2026-08-26. The rename form is the second POST form in the app, so it
+carries the same pair as the ask form: `hx-sync="this:drop"` drops a submit
+made while the first is still in flight — per element, so renaming two windows
+never interferes — and `hx-disabled-elt="find .window-rename-submit"` makes the
+Save button the visible sign of the flight. Cancel stays out of the attribute's
+reach: putting an editor away mid-rename stays possible. The write is idempotent
+in effect either way; the guard buys consistency with the ask form and an honest
+in-flight sign, not correctness.
+
+The too-long refusal names the number — "A window name can be at most 200
+characters." — because "too long to store" left the viewer guessing how far over
+they went. `maxlength` was rejected: the browser silently truncates an over-long
+paste, storing nothing yet telling the viewer nothing, while the core rule for
+names is refuse whole, never truncate. The server stays the only gate. The
+wording is a baked static with a guard test pinning `NAME_LIMIT == 200`, so the
+constant cannot move without the prose following.
+
+---
