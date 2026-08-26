@@ -7,6 +7,12 @@ use noal_core::ask::outcome::Outcome;
 /// change to the CDN cannot change what runs in the browser.
 const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js";
 
+/// The Inter typeface, loaded from its CDN. `--font` in [`STYLE`] names
+/// system-ui first as the stack to fall back on whenever this URL cannot be
+/// reached, so a page never blocks rendering on the download.
+const INTER_STYLESHEET_HREF: &str =
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap";
+
 /// The styles every page carries: Zinc theme variables for content pages,
 /// fixed dark colors for the side drawer, component classes shared by all
 /// views, and a small set of utilities.
@@ -553,6 +559,9 @@ pub fn page(title: &str, chrome: &Chrome, body: &Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · noal" }
+                link rel="preconnect" href="https://fonts.googleapis.com";
+                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
+                link rel="stylesheet" href=(INTER_STYLESHEET_HREF);
                 script src=(HTMX_SRC) defer {}
                 style { (PreEscaped(STYLE)) }
             }
@@ -646,6 +655,26 @@ mod tests {
         assert!(rendered.contains("<title>Home · noal</title>"));
         assert!(rendered.contains("<p>hello</p>"));
         assert!(rendered.contains("hx-history=\"false\""));
+    }
+
+    #[test]
+    fn a_page_loads_inter_from_a_cdn_stylesheet_link_in_its_head() {
+        let rendered = page("Home", &Chrome::anonymous(), &html! {}).into_string();
+        let head_close_at = rendered.find("</head>").unwrap();
+        let link = opening_tag_containing(&rendered, "family=Inter");
+        assert!(link.starts_with("<link"));
+        assert!(link.contains(r#"rel="stylesheet""#));
+        // The link sits in the head, where font loading starts before any
+        // body markup is drawn.
+        assert!(rendered.find(link).unwrap() < head_close_at);
+        // The preconnects open the connections the stylesheet and the font
+        // files travel over, ahead of the fetch itself.
+        assert!(rendered.matches(r#"rel="preconnect""#).count() == 2);
+        assert!(rendered.contains("fonts.gstatic.com"));
+        // Font loading starts before the style sheet or any script.
+        let link_at = rendered.find(link).unwrap();
+        assert!(link_at < rendered.find("<style>").unwrap());
+        assert!(link_at < rendered.find("unpkg.com/htmx.org").unwrap());
     }
 
     #[test]
