@@ -134,9 +134,6 @@ header nav { padding: 1rem 0; }
    button sits beside the form, so it needs its own sizing rule. */
 .window-rename-open { font: inherit; color: inherit; background: none; border: none;
   padding: 0; cursor: pointer; }
-.window-rename input[type="text"] { font: inherit; width: 100%; box-sizing: border-box; }
-.window-rename button { font: inherit; color: inherit; background: none; border: none;
-  padding: 0 .25rem; cursor: pointer; }
 "#;
 
 /// The script that toggles the drawer, switches the palette tabs, fills the
