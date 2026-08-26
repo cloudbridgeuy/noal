@@ -102,7 +102,7 @@ impl Failure {
             Self::Upstream(_) => "A service noal depends on did not answer.",
             Self::Model(_) => "The model did not answer.",
             Self::Auth(_) => "That sign-in could not be completed.",
-            Self::NameTooLong => "That name is too long to store.",
+            Self::NameTooLong => "A window name can be at most 200 characters.",
             Self::NoSuchWindow => "There is no window at this address.",
             Self::Session(_) | Self::NotSignedIn => "Please sign in.",
         }
@@ -152,5 +152,27 @@ impl IntoResponse for Failure {
         );
 
         respond::html(status, markup)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::Failure;
+    use noal_core::window::NAME_LIMIT;
+
+    #[test]
+    fn a_too_long_name_refusal_names_the_limit() {
+        assert_eq!(
+            Failure::NameTooLong.message(),
+            "A window name can be at most 200 characters."
+        );
+    }
+
+    #[test]
+    fn the_too_long_wording_tracks_the_name_limit() {
+        // The message bakes the limit in as prose; this guard breaks loudly
+        // if the constant ever moves without the wording following.
+        assert_eq!(NAME_LIMIT, 200);
     }
 }
