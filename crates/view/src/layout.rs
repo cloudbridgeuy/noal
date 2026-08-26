@@ -46,7 +46,7 @@ body {
 a { color: inherit; }
 table { border-collapse: collapse; }
 td, th { border: 1px solid var(--border); padding: .25rem .5rem; text-align: left; }
-header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
+header nav { padding: 1rem 0; }
 .viewer-email { color: var(--muted); }
 
 .btn {
@@ -69,6 +69,7 @@ header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid
 .gap-sm { gap: .5rem; }
 .gap-md { gap: 1rem; }
 .mt-1 { margin-top: .25rem; }
+.border-b { border-bottom: 1px solid var(--border); }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border-width: 0; }
 
 #debug-toggle {
@@ -584,7 +585,7 @@ pub fn page(title: &str, chrome: &Chrome, body: &Markup) -> Markup {
 #[must_use]
 pub fn header(viewer: &Viewer) -> Markup {
     html! {
-        nav {
+        nav .flex .gap-md .border-b {
             a href="/" { "noal" }
             @match viewer {
                 Viewer::Anonymous => {
@@ -758,6 +759,27 @@ mod tests {
         assert!(rendered.contains("someone@example.com"));
         assert!(rendered.contains("/auth/logout"));
         assert!(!rendered.contains("/auth/login"));
+    }
+
+    #[test]
+    fn the_header_nav_lays_out_with_the_shared_layout_classes() {
+        // The nav opens every header, so its tag is the whole output's prefix.
+        let anonymous = header(&Viewer::Anonymous).into_string();
+        assert!(anonymous.starts_with(r#"<nav class="flex gap-md border-b">"#));
+    }
+
+    #[test]
+    fn header_identity_and_sign_out_carry_their_visual_classes() {
+        let rendered = header(&Viewer::SignedIn {
+            email: "someone@example.com".to_owned(),
+        })
+        .into_string();
+        assert_eq!(
+            opening_tag_containing(&rendered, "viewer-email"),
+            r#"<span class="viewer-email">"#
+        );
+        let form_tag = opening_tag_containing(&rendered, "/auth/logout");
+        assert!(form_tag.contains(r#"class="sign-out""#));
     }
 
     #[test]
