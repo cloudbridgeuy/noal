@@ -46,7 +46,7 @@ body {
 a { color: inherit; }
 table { border-collapse: collapse; }
 td, th { border: 1px solid var(--border); padding: .25rem .5rem; text-align: left; }
-header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
+header nav { padding: 1rem 0; }
 .viewer-email { color: var(--muted); }
 
 .btn {
@@ -69,6 +69,7 @@ header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid
 .gap-sm { gap: .5rem; }
 .gap-md { gap: 1rem; }
 .mt-1 { margin-top: .25rem; }
+.border-b { border-bottom: 1px solid var(--border); }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border-width: 0; }
 
 #debug-toggle {
@@ -89,17 +90,17 @@ header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid
 .sign-out button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
 
 .toast {
-  display: flex; align-items: flex-start; gap: .75rem; padding: .75rem 1rem;
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-  box-shadow: 0 .25rem 1rem rgba(9, 9, 11, .2);
+  align-items: flex-start; gap: .75rem; padding: .75rem 1rem;
+  background: var(--bg); box-shadow: 0 .25rem 1rem rgba(9, 9, 11, .2);
 }
 .toast p { margin: 0; flex: 1; }
-.toast-dismiss { font: inherit; }
+
+.toast-stack { display: grid; gap: .5rem; max-width: 24rem; }
 
 /* Bottom-left, the corner the drawer's own geometry leaves free.
    Highest z-index of the set: a failure notice must never end up hidden
    behind the drawer (9) or its toggle (10), so 11 sits above both. */
-#toasts { position: fixed; left: 1rem; bottom: 1rem; z-index: 11; display: grid; gap: .5rem; max-width: 24rem; }
+#toasts { position: fixed; left: 1rem; bottom: 1rem; z-index: 11; }
 #ask-toast { color: #f87171; }
 
 /* The drawer is dark no matter which theme the viewer's system prefers:
@@ -446,7 +447,7 @@ pub fn debug_payload(outcome: &Outcome) -> Markup {
 #[must_use]
 pub fn toasts() -> Markup {
     html! {
-        div #toasts aria-live="polite" {}
+        div #toasts .toast-stack aria-live="polite" {}
     }
 }
 
@@ -460,9 +461,9 @@ pub fn toasts() -> Markup {
 #[must_use]
 pub fn toast(message: &str) -> Markup {
     html! {
-        div .toast {
+        div .toast.card.flex {
             p { (message) }
-            button .toast-dismiss type="button" aria-label="Dismiss notification" { "×" }
+            button .toast-dismiss.btn.btn-ghost type="button" aria-label="Dismiss notification" { "×" }
         }
     }
 }
@@ -584,7 +585,7 @@ pub fn page(title: &str, chrome: &Chrome, body: &Markup) -> Markup {
 #[must_use]
 pub fn header(viewer: &Viewer) -> Markup {
     html! {
-        nav {
+        nav .flex .gap-md .border-b {
             a href="/" { "noal" }
             @match viewer {
                 Viewer::Anonymous => {
@@ -761,6 +762,27 @@ mod tests {
     }
 
     #[test]
+    fn the_header_nav_lays_out_with_the_shared_layout_classes() {
+        // The nav opens every header, so its tag is the whole output's prefix.
+        let anonymous = header(&Viewer::Anonymous).into_string();
+        assert!(anonymous.starts_with(r#"<nav class="flex gap-md border-b">"#));
+    }
+
+    #[test]
+    fn header_identity_and_sign_out_carry_their_visual_classes() {
+        let rendered = header(&Viewer::SignedIn {
+            email: "someone@example.com".to_owned(),
+        })
+        .into_string();
+        assert_eq!(
+            opening_tag_containing(&rendered, "viewer-email"),
+            r#"<span class="viewer-email">"#
+        );
+        let form_tag = opening_tag_containing(&rendered, "/auth/logout");
+        assert!(form_tag.contains(r#"class="sign-out""#));
+    }
+
+    #[test]
     fn markup_escapes_viewer_supplied_text() {
         let viewer = Viewer::SignedIn {
             email: "<script>alert(1)</script>".to_owned(),
@@ -839,7 +861,9 @@ mod tests {
         assert!(rendered.contains(r#"id="toasts""#));
         assert!(rendered.contains(r#"aria-live="polite""#));
         // Empty: a page starts with no failure to announce.
-        assert!(rendered.contains(r#"<div id="toasts" aria-live="polite"></div>"#));
+        assert!(
+            rendered.contains(r#"<div class="toast-stack" id="toasts" aria-live="polite"></div>"#)
+        );
     }
 
     #[test]
@@ -858,8 +882,22 @@ mod tests {
         // itself — otherwise selecting the message text would dismiss it,
         // and a screen reader would read the whole message as a button.
         let rendered = toast("noal could not run the query it wrote.").into_string();
-        let toast_tag = opening_tag_containing(&rendered, r#"class="toast""#);
-        assert_eq!(toast_tag, r#"<div class="toast">"#);
+        let toast_tag = opening_tag_containing(&rendered, r#"class="toast card flex""#);
+        assert_eq!(toast_tag, r#"<div class="toast card flex">"#);
+    }
+
+    #[test]
+    fn a_toast_s_dismiss_button_takes_the_ghost_button_pair() {
+        let rendered = toast("noal could not run the query it wrote.").into_string();
+        let tag = opening_tag_containing(&rendered, "toast-dismiss");
+        assert!(tag.contains(r#"class="toast-dismiss btn btn-ghost""#));
+    }
+
+    #[test]
+    fn the_toasts_region_carries_its_stack_layout_in_a_class() {
+        assert!(
+            super::STYLE.contains(".toast-stack { display: grid; gap: .5rem; max-width: 24rem; }")
+        );
     }
 
     #[test]
@@ -880,7 +918,7 @@ mod tests {
         // The wording comes from the one function every other toast reads
         // from, not a second copy typed into the template.
         assert!(rendered.contains(OFFLINE_MESSAGE));
-        assert!(rendered.contains(r#"class="toast""#));
+        assert!(rendered.contains(r#"class="toast card flex""#));
     }
 
     // The palette's runtime behaviour — opening, closing, focus, tab
@@ -1059,6 +1097,16 @@ mod tests {
         // to an ancestor of it, so a rule scoped to a shared element is what
         // actually shows an indicator named directly, as `#ask-busy` is.
         assert!(super::STYLE.contains(".htmx-request.htmx-indicator { display: inline; }"));
+    }
+
+    #[test]
+    fn the_toast_rule_follows_the_card_rule_in_source_order() {
+        // Both selectors land on a rendered toast at equal specificity, so
+        // the toast's tighter padding wins only because its block comes
+        // after .card's; reordering them silently widens every toast.
+        let card_at = super::STYLE.find(".card {").unwrap();
+        let toast_at = super::STYLE.find(".toast {").unwrap();
+        assert!(card_at < toast_at);
     }
 
     #[test]
