@@ -161,6 +161,42 @@ tree shows the refinement; depth is the immediate parent only.
 
 ---
 
+## A re-run tells the truth about itself
+
+**Chosen over** rendering blank cells when the stored columns no longer match
+what the query returns, over reusing first-ask refusal wording on a window
+whose artifacts were written days ago, and over a script-driven refresh
+button, which would put navigation back into the page that d3's verification
+removed it from.
+
+Dated 2026-08-25. A reopened window states its age — "Saved <date> · data
+re-read on arrival", date only, UTC, day granularity, the full RFC 3339
+instant in `<time datetime>` with no href. The value is read once by the
+shell (`extract(epoch from created_at)`), carried on the `Window` struct,
+and formatted by pure `Timestamp` methods that never read a clock; nothing
+in noal writes the column.
+
+Shape drift refuses loudly at Fill: before filling, a reopened ask compares
+the returned columns against the stored shape as sets, and any mismatch ends
+the ask with the diff recorded in `debug.attempts` — never a page of blank
+cells that looks like an empty result. An empty or non-array result cannot
+be inspected and passes (accepted fog: all rows gone looks like a legitimate
+empty answer). A first ask is not gated; the model still holds the plan it
+just wrote.
+
+Refusal wording knows where the artifact came from:
+`failure_text(stage, origin)` keeps the first-ask sentences ("noal could not
+run the query it wrote") and gives re-runs their own ("This window no longer
+works: the query it saved was refused."), because an old artifact working
+once and failing now is a different fact than a fresh mistake.
+
+Refresh is arrival at the window you stand on: an ordinary anchor (↻) sits
+beside the current tree row alone — absent from Home, other rows, and every
+non-window page — and its click is a full document load of the same URL,
+which *is* the re-run, with no noal script involved.
+
+---
+
 ## The palette and the toast region are page chrome
 
 **Chosen over** wiring the ask form itself to notice a failed request, over
