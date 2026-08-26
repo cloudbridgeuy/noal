@@ -70,6 +70,8 @@ header nav { padding: 1rem 0; }
 .gap-md { gap: 1rem; }
 .mt-1 { margin-top: .25rem; }
 .border-b { border-bottom: 1px solid var(--border); }
+.muted { color: var(--muted); }
+.text-sm { font-size: .875rem; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border-width: 0; }
 
 #debug-toggle {
@@ -85,7 +87,6 @@ header nav { padding: 1rem 0; }
 .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline; }
 
 #ask-form { display: grid; gap: .5rem; }
-#ask-form input { font: inherit; padding: .5rem; }
 .sign-out { display: contents; }
 .sign-out button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
 
@@ -1109,6 +1110,12 @@ mod tests {
         assert!(super::STYLE.contains(".gap-md { gap: 1rem; }"));
         assert!(super::STYLE.contains(".mt-1 { margin-top: .25rem; }"));
         assert!(super::STYLE.contains(".sr-only { position: absolute; width: 1px; height: 1px;"));
+    }
+
+    #[test]
+    fn the_style_defines_text_utilities() {
+        assert!(super::STYLE.contains(".muted { color: var(--muted); }"));
+        assert!(super::STYLE.contains(".text-sm { font-size: .875rem; }"));
     }
 
     #[test]
