@@ -16,7 +16,10 @@ const INTER_STYLESHEET_HREF: &str =
 /// The styles every page carries: Zinc theme variables for content pages,
 /// fixed dark colors for the side drawer, component classes shared by all
 /// views, and a small set of utilities.
-const STYLE: &str = r#"
+///
+/// Crate-visible so the class guide [`crate::render::CSS_CLASS_GUIDE`] can be
+/// checked against it: every class the guide names must exist here.
+pub(crate) const STYLE: &str = r#"
 *, ::before, ::after { box-sizing: border-box; }
 
 :root {
