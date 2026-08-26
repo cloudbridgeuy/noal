@@ -126,6 +126,10 @@ header nav { padding: 1rem 0; }
 #palette li#window-current > a { color: var(--accent-hover); }
 #palette a { color: var(--accent); }
 #palette pre { white-space: pre-wrap; background: #18181b; padding: .5rem; }
+#debug-tab { border: 1px solid #27272a; border-radius: var(--radius); padding: 1rem; }
+#palette .card { border-color: #27272a; }
+#debug-content h3 { font-weight: 600; margin: .75rem 0 .25rem; }
+#debug-content pre { border-radius: var(--radius); overflow-x: auto; }
 .tree-row {
   display: inline-flex; align-items: center; gap: .375rem;
   padding: .25rem .375rem; border-radius: .375rem; text-decoration: none;
@@ -739,6 +743,49 @@ mod tests {
         assert!(rendered.contains("'debug-tab').hidden = windows;"));
         // The active style is real CSS, not just a class name.
         assert!(rendered.contains("#palette .tabs button.active"));
+    }
+
+    #[test]
+    fn the_debug_tab_frames_itself_as_a_card_in_the_drawers_own_colors() {
+        let tab = css_block(super::STYLE, "#debug-tab {").unwrap();
+        assert!(tab.contains("border: 1px solid #27272a;"));
+        assert!(tab.contains("border-radius: var(--radius);"));
+        assert!(tab.contains("padding: 1rem;"));
+        // The tab panel is shown and hidden by flipping `hidden`, so its
+        // card rule must leave `display` alone.
+        assert!(!tab.contains("display"));
+    }
+
+    #[test]
+    fn cards_inside_the_drawer_frame_with_hardcoded_dark_not_the_theme() {
+        // The drawer stays dark even when the viewer's system prefers
+        // light, so a card frame resolved through var(--border) would turn
+        // pale exactly there.
+        let zone = css_block(super::STYLE, "#palette .card {").unwrap();
+        assert!(zone.contains("border-color: #27272a;"));
+    }
+
+    #[test]
+    fn the_debug_content_headings_are_dense_and_semibold() {
+        let headings = css_block(super::STYLE, "#debug-content h3 {").unwrap();
+        assert!(headings.contains("font-weight: 600;"));
+        assert!(headings.contains("margin: .75rem 0 .25rem;"));
+    }
+
+    #[test]
+    fn the_debug_content_code_blocks_round_off_and_scroll_rather_than_overflow() {
+        let pre = css_block(super::STYLE, "#debug-content pre {").unwrap();
+        assert!(pre.contains("border-radius: var(--radius);"));
+        assert!(pre.contains("overflow-x: auto;"));
+    }
+
+    #[test]
+    fn the_debug_content_code_blocks_stay_painted_and_wrapped_by_the_drawer_wide_pre_rule() {
+        // #debug-content pre adds only what this rule lacks, so its
+        // paint, spacing, and wrapping must survive untouched.
+        assert!(super::STYLE.contains(
+            "#palette pre { white-space: pre-wrap; background: #18181b; padding: .5rem; }"
+        ));
     }
 
     #[test]
