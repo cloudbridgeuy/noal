@@ -25,10 +25,10 @@ pub fn home(chrome: &Chrome) -> Markup {
         "Home",
         chrome,
         &html! {
-            h1 { "noal" }
+            h1 .mt-1 { "noal" }
             @match &chrome.viewer {
                 Viewer::Anonymous => {
-                    p { "You are not signed in." }
+                    p .muted { "You are not signed in." }
                 }
                 Viewer::SignedIn { .. } => {
                     (crate::ask::greeting())
@@ -59,7 +59,7 @@ pub fn window(
         cut(&outcome.request).as_ref(),
         chrome,
         &html! {
-            section #ask-result {
+            section .card #ask-result {
                 (ask::oob_heading(&heading_entry(chrome, outcome)))
                 p .saved-date {
                     time datetime=(created_at.to_rfc3339()) {
@@ -108,9 +108,11 @@ pub fn failure(chrome: &Chrome, status: u16, message: &str) -> Markup {
         "Something went wrong",
         chrome,
         &html! {
-            h1 { (status) }
-            p { (message) }
-            p { a href="/" { "Back to the start" } }
+            div .card {
+                h1 { (status) }
+                p { (message) }
+                p { a .btn href="/" { "Back to the start" } }
+            }
         },
     )
 }
@@ -173,11 +175,28 @@ mod tests {
     }
 
     #[test]
+    fn the_home_heading_and_the_anonymous_line_carry_their_visual_classes() {
+        let rendered = home(&Chrome::anonymous()).into_string();
+        assert!(rendered.contains("<h1 class=\"mt-1\">noal</h1>"));
+        assert!(rendered.contains("<p class=\"muted\">You are not signed in.</p>"));
+    }
+
+    #[test]
     fn failure_shows_the_status_and_a_way_back() {
         let rendered = failure(&Chrome::anonymous(), 404, "No such page.").into_string();
         assert!(rendered.contains("404"));
         assert!(rendered.contains("No such page."));
         assert!(rendered.contains("href=\"/\""));
+    }
+
+    #[test]
+    fn the_failure_content_sits_in_a_card_with_a_button_back_link() {
+        let rendered = failure(&Chrome::anonymous(), 404, "No such page.").into_string();
+        let start = rendered.find("<div class=\"card\">").unwrap();
+        let end = rendered[start..].find("</div>").unwrap() + start;
+        assert!(rendered[start..=end].contains("<h1>404</h1>"));
+        assert!(rendered[start..=end].contains("<p>No such page.</p>"));
+        assert!(rendered[start..=end].contains("<a class=\"btn\" href=\"/\">Back to the start</a>"));
     }
 
     #[test]
@@ -233,9 +252,13 @@ mod tests {
         )
         .into_string();
 
-        let start = rendered.find("<section id=\"ask-result\">").unwrap();
+        let start = rendered
+            .find("<section class=\"card\" id=\"ask-result\">")
+            .unwrap();
         let section = &rendered[start..];
-        assert!(section.starts_with("<section id=\"ask-result\"><h2 id=\"ask-heading\""));
+        assert!(
+            section.starts_with("<section class=\"card\" id=\"ask-result\"><h2 id=\"ask-heading\"")
+        );
         assert!(section.contains("<h2 id=\"ask-heading\""));
         assert!(
             !rendered.contains("<h1>open tasks</h1>"),
@@ -267,8 +290,9 @@ mod tests {
             }),
         )
         .into_string();
-        assert!(rendered
-            .contains("<li class=\"tree-row\" id=\"window-current\"><a class=\"window-label\" href=\"/w/"));
+        assert!(rendered.contains(
+            "<li class=\"tree-row\" id=\"window-current\"><a class=\"window-label\" href=\"/w/"
+        ));
         assert_eq!(rendered.matches("id=\"window-current\"").count(), 1);
     }
 
@@ -322,7 +346,9 @@ mod tests {
         assert!(rendered.contains("the query it saved was refused"));
         // The palette carries the one ask form; the answer's own section
         // must not grow a second one.
-        let start = rendered.find("<section id=\"ask-result\">").unwrap();
+        let start = rendered
+            .find("<section class=\"card\" id=\"ask-result\">")
+            .unwrap();
         let end = rendered[start..].find("</section>").unwrap() + start;
         let section = &rendered[start..=end];
         assert!(
@@ -367,6 +393,39 @@ mod tests {
         assert!(rendered.contains("Saved 1 Feb 2026"));
         assert!(rendered.contains("data re-read on arrival"));
         assert!(rendered.contains("datetime=\"2026-02-01T10:20:30Z\""));
+    }
+
+    #[test]
+    fn the_window_result_section_opens_exactly_as_the_ask_fragments_do() {
+        // htmx swaps an answer into whichever #ask-result stands where a form
+        // posted from, so this page's resting section must be shaped like
+        // greeting()'s and answer()'s or the first swap would rewrite it.
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            saved_at(),
+            &outcome(Verdict::Answered {
+                html: String::new(),
+            }),
+        )
+        .into_string();
+        let fragment_opener = r#"<section class="card" id="ask-result">"#;
+        assert!(crate::ask::greeting()
+            .into_string()
+            .starts_with(fragment_opener));
+        assert!(rendered.contains(fragment_opener));
+    }
+
+    #[test]
+    fn the_saved_date_line_carries_its_own_class() {
+        let rendered = window(
+            &signed_in("someone@example.com"),
+            saved_at(),
+            &outcome(Verdict::Answered {
+                html: String::new(),
+            }),
+        )
+        .into_string();
+        assert!(rendered.contains("<p class=\"saved-date\"><time"));
     }
 
     #[test]
