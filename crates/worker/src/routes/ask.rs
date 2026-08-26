@@ -488,7 +488,7 @@ mod tests {
         )
         .into_string();
         assert!(body.contains("could not run the query"));
-        assert!(body.contains("class=\"toast\""));
+        assert!(body.contains("class=\"toast card flex\""));
         assert!(body.contains("id=\"ask-debug\""));
         assert!(!body.contains("id=\"ask-result\""));
     }
@@ -561,7 +561,7 @@ mod tests {
         assert!(body.contains("id=\"ask-result\""));
         // Closing the palette early cannot disturb a swap landing outside it.
         assert!(
-            !body.contains("class=\"toast\""),
+            !body.contains("class=\"toast card flex\""),
             "an answer is not a failure notice"
         );
     }
