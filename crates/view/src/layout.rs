@@ -137,7 +137,6 @@ header nav { padding: 1rem 0; }
 .window-rename input[type="text"] { font: inherit; width: 100%; box-sizing: border-box; }
 .window-rename button { font: inherit; color: inherit; background: none; border: none;
   padding: 0 .25rem; cursor: pointer; }
-#debug-copy { font: inherit; }
 "#;
 
 /// The script that toggles the drawer, switches the palette tabs, fills the
@@ -396,18 +395,18 @@ fn palette(chrome: &Chrome) -> Markup {
     use crate::windows::tree;
 
     html! {
-        button #debug-toggle type="button" title="Toggle the side panel" { "menu" }
+        button #debug-toggle .btn type="button" title="Toggle the side panel" { "menu" }
         aside #palette hidden {
             div .tabs {
-                button #tab-windows type="button" .active { "Windows" }
+                button #tab-windows type="button" .active.tab-active { "Windows" }
                 button #tab-debug type="button" { "Debug" }
             }
             section #windows-tab {
                 (tree(&chrome.windows, &chrome.current))
             }
             section #debug-tab hidden {
-                p { button #debug-copy type="button" { "copy" } }
-                div #debug-content {
+                p { button #debug-copy .btn.btn-ghost type="button" { "copy" } }
+                div #debug-content .card {
                     p { "Ask something; the plan, template, and timings appear here." }
                 }
             }
@@ -697,13 +696,37 @@ mod tests {
         let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
         // The tabs are real buttons the script can click.
         assert!(rendered.contains(
-            "<button class=\"active\" id=\"tab-windows\" type=\"button\">Windows</button>"
+            "<button class=\"active tab-active\" id=\"tab-windows\" type=\"button\">Windows</button>"
         ));
         assert!(rendered.contains("<button id=\"tab-debug\" type=\"button\">Debug</button>"));
         // Each section carries the id the script targets, and Debug starts
         // hidden while Windows shows.
         assert!(rendered.contains("<section id=\"windows-tab\">"));
         assert!(rendered.contains("<section id=\"debug-tab\" hidden>"));
+    }
+
+    #[test]
+    fn the_debug_toggle_takes_the_shared_button_class() {
+        let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
+        let tag = opening_tag_containing(&rendered, "id=\"debug-toggle\"");
+        assert!(tag.starts_with("<button"));
+        assert!(tag.contains(r#"class="btn""#));
+    }
+
+    #[test]
+    fn the_debug_copy_button_takes_the_ghost_button_pair() {
+        let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
+        let tag = opening_tag_containing(&rendered, "id=\"debug-copy\"");
+        assert!(tag.starts_with("<button"));
+        assert!(tag.contains(r#"class="btn btn-ghost""#));
+    }
+
+    #[test]
+    fn the_debug_content_panel_takes_the_card_class() {
+        let rendered = page("Home", &signed_in("someone@example.com"), &html! {}).into_string();
+        let tag = opening_tag_containing(&rendered, "id=\"debug-content\"");
+        assert!(tag.starts_with("<div"));
+        assert!(tag.contains(r#"class="card""#));
     }
 
     #[test]
