@@ -7,34 +7,128 @@ use noal_core::ask::outcome::Outcome;
 /// change to the CDN cannot change what runs in the browser.
 const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js";
 
-/// Enough CSS to make the page and the overlay usable. No framework yet.
+/// The Inter typeface, loaded from its CDN. `--font` in [`STYLE`] names
+/// system-ui first as the stack to fall back on whenever this URL cannot be
+/// reached, so a page never blocks rendering on the download.
+const INTER_STYLESHEET_HREF: &str =
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap";
+
+/// The styles every page carries: Zinc theme variables for content pages,
+/// fixed dark colors for the side drawer, component classes shared by all
+/// views, and a small set of utilities.
 const STYLE: &str = r#"
-body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 0 1rem; max-width: 72rem; margin-inline: auto; }
-header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #ddd; }
-.sign-out { display: contents; }
-.sign-out button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
-#ask-form { display: grid; gap: .5rem; }
-#ask-form input { font: inherit; padding: .5rem; }
-.htmx-indicator { display: none; }
+*, ::before, ::after { box-sizing: border-box; }
+
+:root {
+  --bg: #fafafa;
+  --fg: #09090b;
+  --border: #e4e4e7;
+  --primary: #18181b;
+  --muted: #71717a;
+  --radius: 0.5rem;
+  --font: 'Inter', system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09090b;
+    --fg: #fafafa;
+    --border: #27272a;
+    --primary: #fafafa;
+    --muted: #a1a1aa;
+  }
+}
+
+body {
+  max-width: 72rem; margin: 0 auto; padding: 0 1rem;
+  font-family: var(--font); font-size: 16px; line-height: 1.5;
+  background: var(--bg); color: var(--fg);
+}
+a { color: inherit; }
+table { border-collapse: collapse; }
+td, th { border: 1px solid var(--border); padding: .25rem .5rem; text-align: left; }
+header nav { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.viewer-email { color: var(--muted); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  font: inherit; padding: .375rem .75rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: none; color: inherit; cursor: pointer;
+}
+.btn:hover { opacity: .8; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--bg); }
+.btn-ghost { border-color: transparent; background: none; color: var(--muted); }
+.input {
+  font: inherit; width: 100%; padding: .5rem .625rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: none; color: inherit;
+}
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+
+.flex { display: flex; }
+.gap-sm { gap: .5rem; }
+.gap-md { gap: 1rem; }
+.mt-1 { margin-top: .25rem; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border-width: 0; }
+
+#debug-toggle {
+  position: fixed; right: 1rem; bottom: 1rem; z-index: 10;
+  font: inherit; padding: .375rem .625rem;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); color: var(--fg); cursor: pointer;
+}
+
 /* htmx marks the element hx-indicator names, not an ancestor, so the
    same-element selector is the one that fires. */
+.htmx-indicator { display: none; }
 .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { display: inline; }
-table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .25rem .5rem; text-align: left; }
-#debug-toggle { position: fixed; right: 1rem; bottom: 1rem; z-index: 10; }
-/* The side drawer: the saved-window tree and the debug panel behind two
-   tabs, with the ask form at its foot. */
-#palette { position: fixed; inset: 0 0 0 auto; width: min(40rem, 100%); background: #111; color: #eee;
-  overflow: auto; padding: 1rem; font: 13px/1.4 ui-monospace, monospace; z-index: 9; }
+
+#ask-form { display: grid; gap: .5rem; }
+#ask-form input { font: inherit; padding: .5rem; }
+.sign-out { display: contents; }
+.sign-out button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+
+.toast {
+  display: flex; align-items: flex-start; gap: .75rem; padding: .75rem 1rem;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 .25rem 1rem rgba(9, 9, 11, .2);
+}
+.toast p { margin: 0; flex: 1; }
+.toast-dismiss { font: inherit; }
+
+/* Bottom-left, the corner the drawer's own geometry leaves free.
+   Highest z-index of the set: a failure notice must never end up hidden
+   behind the drawer (9) or its toggle (10), so 11 sits above both. */
+#toasts { position: fixed; left: 1rem; bottom: 1rem; z-index: 11; display: grid; gap: .5rem; max-width: 24rem; }
+#ask-toast { color: #f87171; }
+
+/* The drawer is dark no matter which theme the viewer's system prefers:
+   its colors are hardcoded rather than read from :root. Declaring the
+   accent variables here puts them in scope for everything drawn inside. */
+#palette {
+  position: fixed; inset: 0 0 0 auto; width: min(40rem, 100%);
+  overflow: auto; padding: 1rem; font: 13px/1.4 ui-monospace, monospace; z-index: 9;
+  background: #09090b; color: #fafafa;
+  --accent: #7dd3fc; --accent-hover: #bae6fd;
+}
 #palette[hidden] { display: none; }
-#palette .tabs { display: flex; gap: 1.5rem; border-bottom: 1px solid #444; margin-bottom: .75rem; padding-bottom: .5rem; }
+#palette .tabs { display: flex; gap: 1.5rem; border-bottom: 1px solid #27272a; margin-bottom: .75rem; padding-bottom: .5rem; }
 #palette .tabs button { font: inherit; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
   background: none; border: none; color: inherit; padding: 0 0 .25rem; cursor: pointer;
   border-bottom: 2px solid transparent; }
 #palette .tabs button.active { color: #fff; border-bottom-color: #9cf; }
+.tab-active { color: #7dd3fc; border-bottom-color: #7dd3fc; }
 #palette ul { list-style: none; margin: 0; padding: 0; }
 #palette ul ul { padding-left: 1rem; }
-#palette a { color: #9cf; }
-.windows-unavailable { color: #f99; }
+#palette li#window-current > a { color: var(--accent-hover); }
+#palette a { color: var(--accent); }
+#palette pre { white-space: pre-wrap; background: #18181b; padding: .5rem; }
+.tree-row {
+  display: inline-flex; align-items: center; gap: .375rem;
+  padding: .25rem .375rem; border-radius: .375rem; text-decoration: none;
+}
+.tree-row:hover { background: #18181b; }
+.windows-unavailable { color: #f87171; }
 /* The rename editor hides its row's label link while open. The opener
    button sits beside the form, so it needs its own sizing rule. */
 .window-rename-open { font: inherit; color: inherit; background: none; border: none;
@@ -42,17 +136,7 @@ table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .
 .window-rename input[type="text"] { font: inherit; width: 100%; box-sizing: border-box; }
 .window-rename button { font: inherit; color: inherit; background: none; border: none;
   padding: 0 .25rem; cursor: pointer; }
-#ask-toast { color: #b33; }
-#palette pre { white-space: pre-wrap; background: #222; padding: .5rem; }
 #debug-copy { font: inherit; }
-/* Bottom-left, the corner the drawer's own geometry leaves free.
-   Highest z-index of the set: a failure notice must never end up hidden
-   behind the drawer (9) or its toggle (10), so 11 sits above both. */
-#toasts { position: fixed; left: 1rem; bottom: 1rem; z-index: 11; display: grid; gap: .5rem; max-width: 24rem; }
-.toast { display: flex; align-items: flex-start; gap: .75rem; background: #fff; border: 1px solid #ddd;
-  border-radius: .5rem; box-shadow: 0 .25rem 1rem rgba(0, 0, 0, .15); padding: .75rem 1rem; }
-.toast p { margin: 0; flex: 1; }
-.toast-dismiss { font: inherit; }
 "#;
 
 /// The script that toggles the drawer, switches the palette tabs, fills the
@@ -475,6 +559,9 @@ pub fn page(title: &str, chrome: &Chrome, body: &Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · noal" }
+                link rel="preconnect" href="https://fonts.googleapis.com";
+                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin;
+                link rel="stylesheet" href=(INTER_STYLESHEET_HREF);
                 script src=(HTMX_SRC) defer {}
                 style { (PreEscaped(STYLE)) }
             }
@@ -568,6 +655,26 @@ mod tests {
         assert!(rendered.contains("<title>Home · noal</title>"));
         assert!(rendered.contains("<p>hello</p>"));
         assert!(rendered.contains("hx-history=\"false\""));
+    }
+
+    #[test]
+    fn a_page_loads_inter_from_a_cdn_stylesheet_link_in_its_head() {
+        let rendered = page("Home", &Chrome::anonymous(), &html! {}).into_string();
+        let head_close_at = rendered.find("</head>").unwrap();
+        let link = opening_tag_containing(&rendered, "family=Inter");
+        assert!(link.starts_with("<link"));
+        assert!(link.contains(r#"rel="stylesheet""#));
+        // The link sits in the head, where font loading starts before any
+        // body markup is drawn.
+        assert!(rendered.find(link).unwrap() < head_close_at);
+        // The preconnects open the connections the stylesheet and the font
+        // files travel over, ahead of the fetch itself.
+        assert!(rendered.matches(r#"rel="preconnect""#).count() == 2);
+        assert!(rendered.contains("fonts.gstatic.com"));
+        // Font loading starts before the style sheet or any script.
+        let link_at = rendered.find(link).unwrap();
+        assert!(link_at < rendered.find("<style>").unwrap());
+        assert!(link_at < rendered.find("unpkg.com/htmx.org").unwrap());
     }
 
     #[test]
@@ -856,6 +963,94 @@ mod tests {
     #[test]
     fn the_style_still_hides_a_hidden_palette() {
         assert!(super::STYLE.contains("#palette[hidden] { display: none; }"));
+    }
+
+    /// Pull a CSS block out of [`STYLE`], from its opener through its
+    /// closing brace.
+    ///
+    /// The stylesheet nests blocks (`@media` wraps an inner `:root`), so a
+    /// bare substring search cannot tell where one block ends; this walks
+    /// the braces instead. The first matching opener wins, and the themes
+    /// are ordered deliberately — see the ordering assertions below.
+    fn css_block<'a>(source: &'a str, opener: &str) -> Option<&'a str> {
+        let start = source.find(opener)?;
+        let open = source[start..].find('{')? + start;
+        let mut depth = 1usize;
+        for (offset, byte) in source[open + 1..].bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[start..open + 2 + offset]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn the_style_defines_the_light_theme_variables_on_root() {
+        let root = css_block(super::STYLE, ":root").unwrap();
+        assert!(root.contains("--bg: #fafafa;"));
+        assert!(root.contains("--fg: #09090b;"));
+        assert!(root.contains("--border: #e4e4e7;"));
+        assert!(root.contains("--primary: #18181b;"));
+        assert!(root.contains("--muted: #71717a;"));
+        assert!(root.contains("--radius: 0.5rem;"));
+        assert!(root.contains("--font: 'Inter', system-ui, sans-serif;"));
+    }
+
+    #[test]
+    fn the_style_overrides_the_theme_variables_for_a_dark_system_preference() {
+        let dark = css_block(super::STYLE, "@media (prefers-color-scheme: dark)").unwrap();
+        assert!(dark.contains("--bg: #09090b;"));
+        assert!(dark.contains("--fg: #fafafa;"));
+        assert!(dark.contains("--border: #27272a;"));
+        assert!(dark.contains("--primary: #fafafa;"));
+        assert!(dark.contains("--muted: #a1a1aa;"));
+    }
+
+    #[test]
+    fn the_light_theme_precedes_its_dark_override_in_source_order() {
+        // Both theme rules target `:root` at equal specificity, so when the
+        // viewer's system prefers dark, whichever declaration comes last
+        // wins. The override must therefore follow the light variables.
+        let light_at = super::STYLE.find(":root").unwrap();
+        let dark_at = super::STYLE.find("(prefers-color-scheme: dark)").unwrap();
+        assert!(light_at < dark_at);
+    }
+
+    #[test]
+    fn the_palette_carries_its_own_dark_zone_off_the_theme_variables() {
+        let palette = css_block(super::STYLE, "#palette {").unwrap();
+        assert!(palette.contains("background: #09090b;"));
+        assert!(palette.contains("color: #fafafa;"));
+        assert!(palette.contains("--accent: #7dd3fc;"));
+        assert!(palette.contains("--accent-hover: #bae6fd;"));
+    }
+
+    #[test]
+    fn the_style_defines_component_classes_for_shared_views() {
+        assert!(super::STYLE.contains(".btn {"));
+        assert!(super::STYLE.contains(".btn-primary { background: var(--primary);"));
+        assert!(super::STYLE.contains(".btn-ghost {"));
+        assert!(super::STYLE.contains(".input {"));
+        assert!(super::STYLE.contains(".card { border: 1px solid var(--border);"));
+        assert!(super::STYLE.contains(".toast {"));
+        assert!(super::STYLE.contains(".tab-active { color: #7dd3fc; border-bottom-color: #7dd3fc; }"));
+        assert!(super::STYLE.contains(".tree-row:hover { background: #18181b; }"));
+    }
+
+    #[test]
+    fn the_style_defines_layout_utilities() {
+        assert!(super::STYLE.contains(".flex { display: flex; }"));
+        assert!(super::STYLE.contains(".gap-sm { gap: .5rem; }"));
+        assert!(super::STYLE.contains(".gap-md { gap: 1rem; }"));
+        assert!(super::STYLE.contains(".mt-1 { margin-top: .25rem; }"));
+        assert!(super::STYLE.contains(".sr-only { position: absolute; width: 1px; height: 1px;"));
     }
 
     #[test]
