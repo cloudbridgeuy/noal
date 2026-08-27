@@ -247,3 +247,57 @@ wording is a baked static with a guard test pinning `NAME_LIMIT == 200`, so the
 constant cannot move without the prose following.
 
 ---
+
+## One stylesheet carries two themes and the drawer's own dark, through custom properties
+
+**Chosen over** Tailwind JIT vendored into the binary (≈15–25 KB gzipped for a
+CSS string const), over a private utility vocabulary the model would have to
+learn from scratch, and over per-component ad-hoc rules.
+
+`const STYLE` in `crates/view/src/layout.rs` is one hand-authored sheet. `:root`
+defines Zinc light variables for content pages;
+`@media (prefers-color-scheme: dark)` overrides them so content follows the
+system preference; the palette drawer hardcodes its own near-black zone with
+sky-blue accents, reading none of the theme variables — the drawer is dark no
+matter what the viewer's OS prefers. Inter loads from its CDN in `page()`'s
+head, ahead of the stylesheet, with a system stack as fallback, so a blocked CDN
+degrades to system-ui instead of blocking first paint. Component classes
+(`.btn`, `.btn-primary`, `.btn-ghost`, `.input`, `.card`, `.toast`, `.tab-active`,
+`.tree-row`) and small utilities (`.flex`, `.gap-*`, `.mt-1`, `.border-b`,
+`.muted`, `.text-sm`, …) carry the shared look; every page chrome — header nav,
+toasts, palette tabs and debug panel, window tree rows and rename form, ask form
+and result sections, home/window/failure pages — wears them. Structural names
+(ids, `hx-*`, classes scripts bind to like `window-rename-submit`) are untouched,
+so htmx wiring and `OVERLAY_SCRIPT`'s assumptions never moved.
+
+A rule can survive on the sheet without being attached anywhere yet; the sheet is
+the catalog, not the markup. Shared-class rules lose to more specific selectors on
+the same element, so where an older selector owned an element's styling that later
+took a shared class (`#ask-form input`, `.window-rename input/button`,
+`#debug-copy`, `.toast-dismiss`), the old rule was retired or narrowed in the same
+change that attached the class — never left competing underneath. Source order is load-bearing where equal specificity
+meets (`.card` before `.toast`; light `:root` before the dark override); tests
+pin those orders so reordering fails loudly.
+
+---
+
+## The model learns the stylesheet's class names from its prompt, not from reading source
+
+**Chosen over** letting templates invent class names (unstyled output), over
+documenting them only in this file (the model never sees it), and over teaching
+Tera or CSS in the preamble (the model already knows both).
+
+Model-written Tera templates render inside `<section class="card"
+id="ask-result">`, so anything they emit lands on the design system if they name
+its classes. `noal_view::render::CSS_CLASS_GUIDE` lists exactly those: the
+component and utility classes above, plus bare-element notes (tables and links
+need no class). `template_preamble()` joins core's `RENDER_PREAMBLE` — the
+security and honesty rules keep their lead — with that list, and the worker's
+render-stage call passes it as the system message. Two parity tests walk both
+directions mechanically: every non-machinery class in the stylesheet must be
+offered by the guide, and the guide may offer nothing the stylesheet lacks, so
+the prose cannot drift from the sheet. Machinery-only names (`htmx-request`,
+`htmx-indicator`, `sign-out`, the tabs' `active`, `window-rename-open`) stay out:
+templates have no use for them. `.toast-dismiss` is documented despite styling
+nothing, because it is the hook `OVERLAY_SCRIPT` binds dismissal to.
+
