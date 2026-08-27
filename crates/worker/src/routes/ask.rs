@@ -27,10 +27,11 @@ use noal_core::ask::outcome::{Outcome, Stage, Timing, Verdict};
 use noal_core::ask::parent_url::window_segment;
 use noal_core::ask::pipeline::{Event, Pipeline, Step};
 use noal_core::ask::plan::{Column, Parent, Plan};
-use noal_core::ask::prompt::{strip_fences, PLAN_PREAMBLE, RENDER_PREAMBLE};
+use noal_core::ask::prompt::{strip_fences, PLAN_PREAMBLE};
 use noal_core::session::SessionClaims;
 use noal_core::window::{NewWindow, Window};
 use noal_view::ask::Saved;
+use noal_view::render::template_preamble;
 use noal_view::windows::Current;
 use serde::Deserialize;
 use tokio_postgres::SimpleQueryMessage;
@@ -411,7 +412,7 @@ where
 
 /// Ask the model for a template and drop any surrounding code fence.
 async fn render_call(state: &AppState, prompt: String) -> Result<String, Failure> {
-    let text = llm::text(state.config(), RENDER_PREAMBLE, prompt).await?;
+    let text = llm::text(state.config(), &template_preamble(), prompt).await?;
     Ok(strip_fences(&text))
 }
 
@@ -488,7 +489,7 @@ mod tests {
         )
         .into_string();
         assert!(body.contains("could not run the query"));
-        assert!(body.contains("class=\"toast\""));
+        assert!(body.contains("class=\"toast card flex\""));
         assert!(body.contains("id=\"ask-debug\""));
         assert!(!body.contains("id=\"ask-result\""));
     }
@@ -561,7 +562,7 @@ mod tests {
         assert!(body.contains("id=\"ask-result\""));
         // Closing the palette early cannot disturb a swap landing outside it.
         assert!(
-            !body.contains("class=\"toast\""),
+            !body.contains("class=\"toast card flex\""),
             "an answer is not a failure notice"
         );
     }

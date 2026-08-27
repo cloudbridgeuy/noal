@@ -122,7 +122,7 @@ fn listing(windows: &Windows, current: &Current) -> Markup {
 fn home_row(current: &Current) -> Markup {
     let marked = matches!(current, Current::Home);
     html! {
-        li id=[marked.then_some("window-current")] {
+        li .tree-row id=[marked.then_some("window-current")] {
             a href="/" title="Home" { "Home" }
         }
     }
@@ -138,7 +138,7 @@ fn home_row(current: &Current) -> Markup {
 fn branch(node: &Node, current: &Current) -> Markup {
     let marked = matches!(current, Current::Window(id) if *id == node.entry.id);
     html! {
-        li id=[marked.then_some("window-current")] {
+        li .tree-row id=[marked.then_some("window-current")] {
             a .window-label href=(format!("/w/{}", node.entry.id)) title=(node.entry.request) {
                 (label(&node.entry))
             }
@@ -183,15 +183,16 @@ fn rename_form(node: &Node, marked: bool) -> Markup {
     let id = node.entry.id;
     html! {
         form .window-rename hidden hx-post=(format!("/w/{id}/name"))
-            hx-target="#window-tree" hx-swap="outerHTML" {
+            hx-target="#window-tree" hx-swap="outerHTML"
+            hx-sync="this:drop" hx-disabled-elt="find .window-rename-submit" {
             @if marked {
                 input type="hidden" name="current-window" value="true" {}
             }
             label for=(rename_input_id(id)) { "Name this window" }
-            input #(rename_input_id(id)) name="name" type="text"
+            input .input #(rename_input_id(id)) name="name" type="text"
                 value=[node.entry.name.as_deref()];
-            button .window-rename-submit type="submit" { "Save name" }
-            button .window-rename-cancel type="button" { "Cancel" }
+            button .window-rename-submit.btn type="submit" { "Save name" }
+            button .window-rename-cancel.btn.btn-ghost type="button" { "Cancel" }
         }
     }
 }
@@ -321,7 +322,7 @@ mod tests {
 
         let rendered = tree(&windows, &Current::Home).into_string();
         assert_eq!(rendered.matches("id=\"window-current\"").count(), 1);
-        assert!(rendered.contains("<li id=\"window-current\"><a href=\"/\""));
+        assert!(rendered.contains("<li class=\"tree-row\" id=\"window-current\"><a href=\"/\""));
     }
 
     #[test]
@@ -427,6 +428,25 @@ mod tests {
         // The form targets the tree itself, so a saved rename swaps the fresh
         // tree in place and the palette never has to close.
         assert!(tag.contains(r##"hx-target="#window-tree""##));
+    }
+
+    #[test]
+    fn the_rename_form_drops_a_second_submit_and_disables_only_the_save_button() {
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Home,
+        )
+        .into_string();
+        let tag = opening_form_tag(&rendered);
+        assert!(tag.contains(r#"hx-sync="this:drop""#));
+        assert!(tag.contains(r#"hx-disabled-elt="find .window-rename-submit""#));
+
+        // The cancel control must stay outside hx-disabled-elt's reach so a
+        // slow rename can still be put away mid-flight.
+        assert!(!tag.contains("window-rename-cancel"));
     }
 
     /// Pull the opening `<form ...>` tag of the rendered tree's one form.
@@ -549,6 +569,24 @@ mod tests {
         // And on Home no form carries it.
         let home = tree(&windows, &Current::Home).into_string();
         assert!(!home.contains("current-window"));
+    }
+
+    #[test]
+    fn rows_and_rename_controls_carry_the_design_system_classes() {
+        let rendered = tree(
+            &Windows::Tree(vec![Node {
+                entry: entry("w-1", "first window"),
+                children: Vec::new(),
+            }]),
+            &Current::Window(id("w-1")),
+        )
+        .into_string();
+
+        assert!(rendered.contains("<li class=\"tree-row\" id=\"window-current\">"));
+        assert!(rendered.contains(r#"<li class="tree-row">"#));
+        assert!(rendered.contains(r#"<input class="input" id="window-name-"#));
+        assert!(rendered.contains(r#"class="window-rename-submit btn" type="submit""#));
+        assert!(rendered.contains(r#"class="window-rename-cancel btn btn-ghost" type="button""#));
     }
 
     #[test]

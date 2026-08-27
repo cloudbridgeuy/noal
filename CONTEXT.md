@@ -161,6 +161,42 @@ tree shows the refinement; depth is the immediate parent only.
 
 ---
 
+## A re-run tells the truth about itself
+
+**Chosen over** rendering blank cells when the stored columns no longer match
+what the query returns, over reusing first-ask refusal wording on a window
+whose artifacts were written days ago, and over a script-driven refresh
+button, which would put navigation back into the page that d3's verification
+removed it from.
+
+Dated 2026-08-25. A reopened window states its age — "Saved <date> · data
+re-read on arrival", date only, UTC, day granularity, the full RFC 3339
+instant in `<time datetime>` with no href. The value is read once by the
+shell (`extract(epoch from created_at)`), carried on the `Window` struct,
+and formatted by pure `Timestamp` methods that never read a clock; nothing
+in noal writes the column.
+
+Shape drift refuses loudly at Fill: before filling, a reopened ask compares
+the returned columns against the stored shape as sets, and any mismatch ends
+the ask with the diff recorded in `debug.attempts` — never a page of blank
+cells that looks like an empty result. An empty or non-array result cannot
+be inspected and passes (accepted fog: all rows gone looks like a legitimate
+empty answer). A first ask is not gated; the model still holds the plan it
+just wrote.
+
+Refusal wording knows where the artifact came from:
+`failure_text(stage, origin)` keeps the first-ask sentences ("noal could not
+run the query it wrote") and gives re-runs their own ("This window no longer
+works: the query it saved was refused."), because an old artifact working
+once and failing now is a different fact than a fresh mistake.
+
+Refresh is arrival at the window you stand on: an ordinary anchor (↻) sits
+beside the current tree row alone — absent from Home, other rows, and every
+non-window page — and its click is a full document load of the same URL,
+which *is* the re-run, with no noal script involved.
+
+---
+
 ## The palette and the toast region are page chrome
 
 **Chosen over** wiring the ask form itself to notice a failed request, over
@@ -185,3 +221,83 @@ would re-implement the same handling, rather than one page-chrome region
 answering for the whole document. The cost is the one already paid for the
 palette itself: an anonymous viewer gets no toast region, because `#toasts`
 exists only where `#palette` does.
+
+---
+
+## A rename submit drops its double, and a refused name names the limit
+
+**Chosen over** queueing rapid submits (htmx's default), over disabling the
+whole form during flight, and over `maxlength` on the input.
+
+Dated 2026-08-26. The rename form is the second POST form in the app, so it
+carries the same pair as the ask form: `hx-sync="this:drop"` drops a submit
+made while the first is still in flight — per element, so renaming two windows
+never interferes — and `hx-disabled-elt="find .window-rename-submit"` makes the
+Save button the visible sign of the flight. Cancel stays out of the attribute's
+reach: putting an editor away mid-rename stays possible. The write is idempotent
+in effect either way; the guard buys consistency with the ask form and an honest
+in-flight sign, not correctness.
+
+The too-long refusal names the number — "A window name can be at most 200
+characters." — because "too long to store" left the viewer guessing how far over
+they went. `maxlength` was rejected: the browser silently truncates an over-long
+paste, storing nothing yet telling the viewer nothing, while the core rule for
+names is refuse whole, never truncate. The server stays the only gate. The
+wording is a baked static with a guard test pinning `NAME_LIMIT == 200`, so the
+constant cannot move without the prose following.
+
+---
+
+## One stylesheet carries two themes and the drawer's own dark, through custom properties
+
+**Chosen over** Tailwind JIT vendored into the binary (≈15–25 KB gzipped for a
+CSS string const), over a private utility vocabulary the model would have to
+learn from scratch, and over per-component ad-hoc rules.
+
+`const STYLE` in `crates/view/src/layout.rs` is one hand-authored sheet. `:root`
+defines Zinc light variables for content pages;
+`@media (prefers-color-scheme: dark)` overrides them so content follows the
+system preference; the palette drawer hardcodes its own near-black zone with
+sky-blue accents, reading none of the theme variables — the drawer is dark no
+matter what the viewer's OS prefers. Inter loads from its CDN in `page()`'s
+head, ahead of the stylesheet, with a system stack as fallback, so a blocked CDN
+degrades to system-ui instead of blocking first paint. Component classes
+(`.btn`, `.btn-primary`, `.btn-ghost`, `.input`, `.card`, `.toast`, `.tab-active`,
+`.tree-row`) and small utilities (`.flex`, `.gap-*`, `.mt-1`, `.border-b`,
+`.muted`, `.text-sm`, …) carry the shared look; every page chrome — header nav,
+toasts, palette tabs and debug panel, window tree rows and rename form, ask form
+and result sections, home/window/failure pages — wears them. Structural names
+(ids, `hx-*`, classes scripts bind to like `window-rename-submit`) are untouched,
+so htmx wiring and `OVERLAY_SCRIPT`'s assumptions never moved.
+
+A rule can survive on the sheet without being attached anywhere yet; the sheet is
+the catalog, not the markup. Shared-class rules lose to more specific selectors on
+the same element, so where an older selector owned an element's styling that later
+took a shared class (`#ask-form input`, `.window-rename input/button`,
+`#debug-copy`, `.toast-dismiss`), the old rule was retired or narrowed in the same
+change that attached the class — never left competing underneath. Source order is load-bearing where equal specificity
+meets (`.card` before `.toast`; light `:root` before the dark override); tests
+pin those orders so reordering fails loudly.
+
+---
+
+## The model learns the stylesheet's class names from its prompt, not from reading source
+
+**Chosen over** letting templates invent class names (unstyled output), over
+documenting them only in this file (the model never sees it), and over teaching
+Tera or CSS in the preamble (the model already knows both).
+
+Model-written Tera templates render inside `<section class="card"
+id="ask-result">`, so anything they emit lands on the design system if they name
+its classes. `noal_view::render::CSS_CLASS_GUIDE` lists exactly those: the
+component and utility classes above, plus bare-element notes (tables and links
+need no class). `template_preamble()` joins core's `RENDER_PREAMBLE` — the
+security and honesty rules keep their lead — with that list, and the worker's
+render-stage call passes it as the system message. Two parity tests walk both
+directions mechanically: every non-machinery class in the stylesheet must be
+offered by the guide, and the guide may offer nothing the stylesheet lacks, so
+the prose cannot drift from the sheet. Machinery-only names (`htmx-request`,
+`htmx-indicator`, `sign-out`, the tabs' `active`, `window-rename-open`) stay out:
+templates have no use for them. `.toast-dismiss` is documented despite styling
+nothing, because it is the hook `OVERLAY_SCRIPT` binds dismissal to.
+

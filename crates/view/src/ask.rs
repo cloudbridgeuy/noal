@@ -29,10 +29,10 @@ pub fn form() -> Markup {
         form #ask-form hx-post="/ask" hx-target="#ask-result" hx-swap="outerHTML" hx-indicator="#ask-busy"
             hx-sync="this:drop" hx-disabled-elt="find button" {
             label for="ask-input" { "What do you want to see?" }
-            input #ask-input name="request" type="text" required autofocus
+            input #ask-input .input name="request" type="text" required autofocus
                 placeholder="open tasks under the Render MVP epic, with comments";
-            button type="submit" { "Ask" }
-            span #ask-busy .htmx-indicator { "Thinking…" }
+            button .btn.btn-primary type="submit" { "Ask" }
+            span #ask-busy .htmx-indicator.muted { "Thinking…" }
         }
     }
 }
@@ -45,7 +45,7 @@ pub fn form() -> Markup {
 #[must_use]
 pub fn greeting() -> Markup {
     html! {
-        section #ask-result {
+        section .card #ask-result {
             div .ask-answer { "noal" }
         }
     }
@@ -101,11 +101,11 @@ pub fn outcome_view(outcome: &Outcome) -> Markup {
 #[must_use]
 pub fn answer(request: &str, html: &str, saved: Saved) -> Markup {
     html! {
-        section #ask-result {
+        section .card #ask-result {
             h2 #ask-heading { (request) }
             div .ask-answer { (PreEscaped(html)) }
             @if saved == Saved::No {
-                p #ask-toast role="status" { "The window was not saved." }
+                p #ask-toast .text-sm role="status" { "The window was not saved." }
             }
         }
     }
@@ -170,10 +170,24 @@ pub const fn failure_text(stage: Stage, origin: Origin) -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{answer, failure_text, form, greeting, oob_heading, outcome_view, Saved};
     use noal_core::ask::outcome::{Debug, Origin, Outcome, Stage, Verdict};
     use noal_core::window::Entry;
+
+    /// Pull the opening tag containing `needle` out of rendered markup.
+    ///
+    /// Same isolation as the layout tests use: asserting on a fixed
+    /// attribute order across a whole document would silently stop meaning
+    /// anything if maud ever wrote the same attributes in a different
+    /// order, so the one tag is extracted before it is inspected.
+    fn opening_tag_containing<'a>(rendered: &'a str, needle: &str) -> &'a str {
+        let at = rendered.find(needle).unwrap();
+        let start = rendered[..at].rfind('<').unwrap();
+        let end = at + rendered[at..].find('>').unwrap();
+        &rendered[start..=end]
+    }
 
     fn entry(request: &str, name: Option<&str>) -> Entry {
         Entry {
@@ -221,11 +235,50 @@ mod tests {
     }
 
     #[test]
+    fn the_ask_input_takes_the_shared_input_class() {
+        let html = form().into_string();
+        let tag = opening_tag_containing(&html, r#"name="request""#);
+        assert!(tag.starts_with("<input"));
+        assert!(tag.contains(r#"class="input""#));
+        assert!(tag.contains(r#"id="ask-input""#));
+    }
+
+    #[test]
+    fn the_submit_button_takes_the_primary_button_pair() {
+        let html = form().into_string();
+        let tag = opening_tag_containing(&html, r#"type="submit""#);
+        assert!(tag.starts_with("<button"));
+        assert_eq!(tag, r#"<button class="btn btn-primary" type="submit">"#);
+    }
+
+    #[test]
+    fn the_busy_indicator_keeps_its_htmx_class_and_mutes_its_text() {
+        // .htmx-indicator is what the display rules key on; dropping it
+        // would strand #ask-busy permanently visible.
+        let html = form().into_string();
+        assert!(
+            html.contains(r#"<span class="htmx-indicator muted" id="ask-busy">Thinking…</span>"#)
+        );
+    }
+
+    #[test]
     fn the_greeting_fills_ask_result_with_the_shape_answer_will_reuse() {
         let html = greeting().into_string();
         assert!(html.contains("id=\"ask-result\""));
         assert!(html.contains("class=\"ask-answer\""));
         assert!(html.contains("noal"));
+    }
+
+    #[test]
+    fn the_result_sections_carry_the_card_class_on_the_swap_target() {
+        // greeting() and answer() must render the same opener, so htmx's
+        // first swap changes only the content, never the element itself.
+        assert!(greeting()
+            .into_string()
+            .starts_with(r#"<section class="card" id="ask-result">"#));
+        assert!(answer("open tasks", "", Saved::Yes)
+            .into_string()
+            .starts_with(r#"<section class="card" id="ask-result">"#));
     }
 
     #[test]
@@ -249,6 +302,14 @@ mod tests {
         let html = answer("open tasks", "", Saved::No).into_string();
         assert!(html.contains("The window was not saved."));
         assert_eq!(html.matches("The window was not saved.").count(), 1);
+    }
+
+    #[test]
+    fn the_save_warning_carries_the_small_text_class() {
+        let html = answer("open tasks", "", Saved::No).into_string();
+        assert!(html.contains(
+            r#"<p class="text-sm" id="ask-toast" role="status">The window was not saved.</p>"#
+        ));
     }
 
     #[test]
