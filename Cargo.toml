@@ -125,7 +125,7 @@ send_wrapper = { version = "0.6", features = ["futures"] }
 
 # The model client. On wasm32 its reqwest uses the browser Fetch API, so the
 # resulting futures are !Send and must sit inside SendWrapper, like WorkOS.
-rig-core = { version = "0.42", default-features = false }
+rig-core = { version = "0.44", default-features = false }
 
 # Pinned so cargo unifies it with the schemars re-exported by rig-core.
 schemars = "1"
